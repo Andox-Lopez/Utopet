@@ -1,0 +1,69 @@
+# ── 构建产物 ──────────────────────────────────────────────
+# PyInstaller 中间目录与 onefile 输出
+build/
+dist/
+# 安装包成品（体积 35MB+，不入库）
+output/
+*.spec.bak
+
+# Inno Setup 编译输出
+installer/output/
+*.iss.bak
+
+# ── 运行期数据 ────────────────────────────────────────────
+# 配置目录（带注释的可读 JSON，由程序自己写入）
+config/
+# 旧版数据目录（已迁移到 config/，保留 custom.xml 等用户数据）
+data/
+# 注意：characters/ 是角色包资产（conf/*.xml + img/*.png），必须入库，不忽略。
+# 只有程序运行时在角色目录下生成的缓存才排除：
+characters/*/cache/
+
+# ── Python 缓存 ───────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# ── 日志与临时文件 ────────────────────────────────────────
+*.log
+*.broken
+*.tmp
+*.bak
+*~
+analysis/_*
+install.log
+utopet_setup_debug.log
+
+# ── IDE / 编辑器 ──────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── 操作系统 ──────────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ── 本地工具与临时备份 ────────────────────────────────────
+.rollback_backup/
+*.bak.py
+# WorkBuddy 会话记录与项目记忆（工具元数据，非项目源码）
+.workbuddy/
+# GitLens 缓存
+.gitlens/
+#角色缓存
+characters/花卷/
+characters/ayaka/
+#非开发内容
+docs/*

@@ -112,7 +112,7 @@ resident **in the tray**, and Tray menu → "Show taskbar panel" brings it back.
 | **多宠物同时在线**：一次召唤 2/3/5/10 只（托盘与右键菜单），面板可自选数量；落点自动均匀铺开避免叠成一堆；上限保护 + 「只留 1 只」一键瘦身 | **Multiple mascots at once**: summon 2/3/5/10 in one go from the tray / context menu, pick any count in the panel; landing points spread out automatically; count limit + one-click trim |
 | 站在窗口顶部 / 攀爬窗口边缘 / 扛着 / 扔出窗口（原版 IE 系动作） | Stand on top of windows, climb their edges, carry or throw them (the original "IE" actions) |
 | 自我增殖（分裂 / 拔萝卜），可在设置里关闭 | Self-cloning (split / pull-out), switchable in settings |
-| **设置 GUI**：角色、缩放、透明度、帧率、行为、窗口过滤、开机自启、全局快捷键 | **Settings GUI**: character, scale, opacity, frame rate, behaviour, window filter, launch at login, global hotkeys |
+| **设置 GUI**：角色、缩放、透明度、帧率、行为、窗口过滤、开机自启、番茄时钟 | **Settings GUI**: character, scale, opacity, frame rate, behaviour, window filter, launch at login, Pomodoro timer |
 | **逐条微调行为**：57 条行为可单独调权重或一键停用（比如只关掉「分裂」） | **Per-behaviour tuning**: adjust the weight of each of the 57 behaviours, or switch one off (e.g. disable only "分裂") |
 | **自定义动作编辑器**：可视化挑帧 + 循环预览，保存为与原版同构的 `data/custom.xml` | **Custom action editor**: pick frames visually with a looping preview, saved to `data/custom.xml` in the original schema |
 | **多显示器**：宠物走到哪块屏就用哪块屏的工作区 | **Multi-monitor**: each mascot uses the work area of the screen it is currently on |
@@ -121,7 +121,7 @@ resident **in the tray**, and Tray menu → "Show taskbar panel" brings it back.
 | **CalMode 养成状态**：心情/体力/健康/好感随时间漂移，先折算成「开心/普通/状态不佳/生病」，再调整各行为的出现频率 —— 状态**只改频率不改动作**，候选行为集合始终一致 | **CalMode state**: mood/stamina/health/rapport drift over time, fold through thresholds into Happy/Normal/Poor/Ill, then bias how often each behaviour comes up — it changes **frequency only, never the action set** |
 | **会话恢复**：记住上次退出时养了几只、站在哪、分别是什么角色，并**接着做刚才那件事**（连已经跑到的帧数一起恢复；只对同一个行为生效） | **Session restore**: remembers how many mascots you had, where they stood and which character each was — and **continues the activity they were doing**, down to the frame count (only when the same behaviour is chosen) |
 | **开机自启**：勾选即写 `HKCU\...\Run`，打包版指向 exe 自己、源码版用 `pythonw.exe` | **Launch at login**: writes `HKCU\...\Run`; the packaged build points at the exe itself, the source build uses `pythonw.exe` |
-| **全局快捷键**：`Ctrl+Alt+S/D/H/P` 召唤 / 解散 / 显示隐藏 / 面板，**任何程序在前台都生效**；被别的程序占用时逐条告诉你是哪一条失败了 | **Global hotkeys**: `Ctrl+Alt+S/D/H/P` for summon / dismiss / show-hide / panel, **active while any program has focus**; if a combination is taken it tells you which one failed |
+| **番茄时钟**：25 分钟工作 + 5 分钟休息、每 4 轮一次长休息，阶段自动衔接并用系统通知提醒；面板与托盘两处入口，窗口关闭计时继续，打开时**居中到鼠标所在屏幕**；休息开始时宠物会做个动作 | **Pomodoro timer**: 25 min work + 5 min break, a long break every 4 rounds, chained automatically with a system notification per transition; entries in the panel and the tray, the clock keeps running when the window closes, and opening **centres it on the screen under the cursor**; the mascot reacts when a break starts |
 | **角色包一键导入 / 导出**：zip 直接拖进设置窗口就能装（自动识别标准包 / 原版平铺 / 多套一层目录三种布局），缺 `Actions.xml`/`Behavior.xml`/`Mascot.xsd` 时用内置原版模板补齐且**只填不改**；导出成 zip 带同样的补齐 | **One-click character-pack import / export**: drag a zip onto Settings to install (three layouts auto-detected); missing `Actions.xml`/`Behavior.xml`/`Mascot.xsd` are filled from built-in original templates, **add-only, never overwritten**; export produces a zip with the same filling |
 | **程序图标**：512×512 主图派生出三份 —— 窗口/任务栏用 `logo.png`，系统托盘用 `logo.ico`（16px 去圆角，因为托盘只有 16×16，圆角白白吃掉 1/4 面积），exe 与安装包用 `app.ico`（带 256px 大尺寸） | **Icons**: one 512×512 master derives three files — `logo.png` for windows/taskbar, `logo.ico` for the tray (16 px squared off: the tray slot is 16×16, and rounded corners would waste a quarter of it), `app.ico` for the exe and installer (carries 256 px for Explorer) |
 | **常驻任务栏**：控制面板是普通窗口，带真实任务栏按钮，可固定到任务栏；`AppUserModelID` 让系统显示自家 Logo 而非 python.exe。关掉面板后**托盘是唯一常驻入口**，一键就能叫回面板 | **Taskbar-resident**: the control panel is a normal window with a real taskbar button that can be pinned; `AppUserModelID` makes Windows show our logo instead of python.exe. Once the panel is closed the **tray is the single persistent entry**, and it brings the panel back in one click |
@@ -147,7 +147,6 @@ E:\shimejee-remake\
 │   ├── settings.py  cfgfmt.py   设置持久化 + 带注释 JSON / settings & commented JSON
 │   ├── custom.py                自定义动作 / custom actions
 │   ├── characterpack.py         角色包导入·导出·描述文件增补 / pack import-export
-│   ├── hotkeys.py               全局快捷键 / global hotkeys (RegisterHotKey)
 │   ├── assets\                  logo.png / logo.ico · conf_defaults\ 原版模板
 │   ├── xml\
 │   │   ├── aliases.py           日·中·英标签别名 / trilingual tag aliases
@@ -220,6 +219,5 @@ so any original character pack can be dropped into `characters\`.
   unrelated action.
 - 补帧上限 20000 帧（25 fps 下约 13 分钟）—— 更长的循环动作不值得在启动时
   逐帧补回来。 Resumption is clamped at 20 000 frames (~13 min at 25 fps).
-- 全局快捷键只能改 `config\settings.json`，设置界面里目前只显示改键方法，不做
-  按键捕获。 Global hotkeys are edited in `config\settings.json`; the Settings
-  dialog explains how but does not capture keystrokes.
+- 全局快捷键已于 1.0.7 移除（原因见 CHANGELOG：组合极易撞车、注册失败静默、
+  且无法自动化验证）。 Global hotkeys were removed in 1.0.7 (see CHANGELOG).

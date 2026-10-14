@@ -15,13 +15,14 @@ import logging
 import os
 import random
 import sys
+import time
 
 from PySide6.QtCore import QObject, QTimer, Qt
 from PySide6.QtWidgets import (QApplication, QMenu, QMessageBox,
                              QSystemTrayIcon)
 
 from .. import win32
-from ..hotkeys import ACTION_KEYS, DEFAULT_HOTKEYS, HotkeyManager
+from ..pomodoro import Pomodoro
 from ..i18n import get_i18n
 from ..icons import app_icon, tray_icon
 from ..names import display_name
@@ -70,6 +71,17 @@ def setup_logging():
         log.setLevel(logging.INFO)
     except OSError:
         pass
+
+
+def _pomodoro_state_text(pom: Pomodoro) -> str:
+    """番茄时钟当前状态的短文本（托盘悬停提示用）/ One-line Pomodoro status."""
+    t = get_i18n()
+    left = int(pom.remaining)
+    clock = "%02d:%02d" % (left // 60, left % 60)
+    key = {"work": "pomo.state.work", "break": "pomo.state.break",
+           "long_break": "pomo.state.long",
+           "paused": "pomo.state.paused"}.get(pom.phase, "pomo.state.idle")
+    return "%s %s" % (clock, t.t(key))
 
 
 def list_characters(settings: Settings | None = None) -> list[tuple[str, str]]:
@@ -123,14 +135,16 @@ class Manager(QObject):
         self._settings_window = None
         self._panel = None
         self._panel_enabled = bool(settings.get("taskbar_panel", True))
-        #: 全局快捷键 / global hotkeys. 注册失败的项目留在 `failed` 里给界面显示。
-        self.hotkeys = HotkeyManager(app, self.hotkey_specs())
-        # Queued 连接：信号是在原生消息分发里发出来的，槽里要弹窗/建窗，
-        # 同步执行等于在消息泵里重入自己。排队到事件循环再跑。
-        # Queued: the signal is emitted from inside native message dispatch, and
-        # the slot opens windows; running it synchronously would re-enter the
-        # message pump.
-        self.hotkeys.triggered.connect(self._on_hotkey, Qt.QueuedConnection)
+        #: 番茄时钟窗口（非模态，这里持强引用防 GC）/ Pomodoro window.
+        self._pomodoro_window = None
+        #: 番茄时钟 / the Pomodoro timer. 逻辑在 shimeji.pomodoro，无 Qt。
+        self.pomodoro = Pomodoro(
+            work_min=int(settings.get("pomodoro_work_min", 25)),
+            break_min=int(settings.get("pomodoro_break_min", 5)),
+            long_break_min=int(settings.get("pomodoro_long_break_min", 15)),
+            long_every=int(settings.get("pomodoro_long_every", 4)),
+            on_event=self._on_pomodoro_event,
+        )
 
         setup_logging()
         # 关键：先对齐 DPI，否则高缩放屏上宠物会错位
@@ -151,7 +165,6 @@ class Manager(QObject):
         self.reload()
         self._setup_tray()
         self._setup_panel()
-        self.apply_hotkeys()
         self._first_run_guide()
         self.start()
 
@@ -951,6 +964,10 @@ class Manager(QObject):
         menu.addAction(t.t("tray.dismiss_all"), self.dismiss_all)
         menu.addSeparator()
         menu.addAction(t.t("tray.show_hide"), self.toggle_hidden)
+        # 番茄时钟与「显示/隐藏」放一组：都是「把一个常驻窗口叫出来」。
+        # The Pomodoro sits next to show/hide: both are "bring a resident
+        # window up".
+        menu.addAction(t.t("menu.pomodoro"), lambda: self.open_pomodoro())
         menu.addAction(t.t("menu.settings"), self.open_settings)
         menu.addAction(t.t("tray.panel"), self.open_taskbar_panel)
         menu.addSeparator()
@@ -1173,9 +1190,6 @@ class Manager(QObject):
     def quit(self):
         self.save_session()
         self.stop()
-        # 注销全局快捷键：留着不放会一直占住这个组合。
-        # Release the global hotkeys: otherwise the combination stays reserved.
-        self.hotkeys.unregister()
         self.dismiss_all()
         if self._panel is not None:
             self._panel.timer.stop()
@@ -1203,49 +1217,88 @@ class Manager(QObject):
         self._panel_enabled = want
         if self._panel is not None:
             self._panel.setWindowIcon(app_icon())
-        # 快捷键可能被改过 / the bindings may have changed
-        self.apply_hotkeys()
+        # 番茄时钟时长改了 → 下一段生效（不打断正在跑的这一段）
+        # Duration changes apply from the next Pomodoro phase.
+        try:
+            self.pomodoro.set_durations(
+                work_min=int(self.settings.get("pomodoro_work_min", 25)),
+                break_min=int(self.settings.get("pomodoro_break_min", 5)),
+                long_break_min=int(self.settings.get("pomodoro_long_break_min", 15)),
+                long_every=int(self.settings.get("pomodoro_long_every", 4)),
+            )
+        except Exception:  # noqa: BLE001 - 配置坏了不该拖垮整个「应用」
+            log.exception("applying pomodoro durations failed")
         self.refresh_ui_texts()
 
     # ------------------------------------------------------------------
-    # 全局快捷键 / global hotkeys
+    # 番茄时钟 / Pomodoro timer
     # ------------------------------------------------------------------
-    def hotkey_specs(self) -> dict:
+    def open_pomodoro(self, center: bool = False):
         """
-        读设置里的快捷键表 / Read the hotkey table from the settings.
+        打开（或唤醒）番茄时钟窗口 / Open (or raise) the Pomodoro window.
 
-        缺项用默认值补齐：用户可能只在配置里写了自己关心的那一两个键，
-        其余的照旧该能用。
-        Missing entries fall back to the defaults: a user who hand-edits just
-        one binding should not lose the other three.
+        `center=True` 时把窗口放到**鼠标所在屏幕**的中央 —— 参照
+        kwin-move-window-to-center：计时器必须出现在用户正在看的那块屏上，
+        落在另一块显示器上的计时器等于没有。
+        With `center=True` the window lands in the middle of the screen the
+        cursor is on, after kwin-move-window-to-center: a timer on some other
+        monitor is no timer at all.
         """
-        stored = self.settings.get("hotkeys", None)
-        specs = dict(DEFAULT_HOTKEYS)
-        if isinstance(stored, dict):
-            for key, value in stored.items():
-                if key in ACTION_KEYS:
-                    specs[key] = "" if value is None else str(value)
-        return specs
+        from ..gui.pomodoro_window import PomodoroWindow
+        if self._pomodoro_window is None:
+            self._pomodoro_window = PomodoroWindow(self)
+        w = self._pomodoro_window
+        if center:
+            w.center_on_cursor()
+        if not w.isVisible():
+            w.show()
+        w.raise_()
+        w.activateWindow()
+        return w
 
-    def apply_hotkeys(self) -> dict:
-        """按设置重新注册快捷键；返回 `{动作: 失败原因}` / re-register, returns failures."""
-        enabled = bool(self.settings.get("hotkeys_enabled", True))
-        failed = self.hotkeys.apply(self.hotkey_specs(), enabled=enabled)
-        if failed:
-            log.warning("hotkeys not registered: %s", failed)
-        return failed
+    def _on_pomodoro_event(self, event: str, pom: Pomodoro):
+        """阶段切换 → 托盘气泡 + 宠物反应 / A phase transition happened."""
+        t = get_i18n()
+        key = {"work_done": "pomo.msg.work_done",
+               "break_done": "pomo.msg.break_done",
+               "long_break_done": "pomo.msg.break_done"}.get(event)
+        if key:
+            body = t.t(key)
+            try:
+                self.tray.showMessage(t.t("pomo.title"), body,
+                                      QSystemTrayIcon.Information, 6000)
+            except Exception:  # noqa: BLE001 - 气泡失败不该影响计时
+                log.exception("tray balloon failed")
+            # 宠物联动：休息开始了，让宠物做个动作提醒你。
+            # Pet reaction: the break started, let the mascot react.
+            if event == "work_done" and bool(
+                    self.settings.get("pomodoro_pet_react", True)):
+                self._pomodoro_pet_react()
+        # 托盘悬停提示跟着变 / keep the tray tooltip in sync
+        try:
+            self.tray.setToolTip("%s — %s" % (t.t("pomo.title"),
+                                              _pomodoro_state_text(pom)))
+        except Exception:  # noqa: BLE001
+            pass
 
-    def _on_hotkey(self, action: str):
-        """快捷键被按下 / A global hotkey fired."""
-        log.info("hotkey -> %s", action)
-        if action == "summon":
-            self.summon()
-        elif action == "dismiss":
-            self.dismiss(None)
-        elif action == "toggle_hidden":
-            self.toggle_hidden()
-        elif action == "panel":
-            self.open_taskbar_panel(True)
+    def _pomodoro_pet_react(self):
+        """
+        宠物对「该休息了」的反应 / How the mascot reacts to "take a break".
+
+        找一个**这只角色动作表里真的存在**的行为来做 —— 动作名随角色包变，
+        写死一个名字在别的角色上就是无声的 no-op。找不到就什么都不做。
+        Pick a behaviour that actually exists in *this* character's table;
+        names vary per pack, so a hard-coded one would be a silent no-op.
+        """
+        candidates = ("ジャンプ", "跳", "Jump")
+        for m in self.mascots:
+            try:
+                for name in candidates:
+                    if self.brain.behavior_by_name(m, name):
+                        self._force_behavior(m, name, interrupt=True)
+                        break
+            except Exception:  # noqa: BLE001 - 一只失败不影响其它
+                log.exception("pomodoro pet reaction failed")
 
     @staticmethod
     def startup_command() -> str:

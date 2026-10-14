@@ -1364,10 +1364,6 @@ def main() -> int:
     from shimeji.engine.manager import (LOG_PATH as _LOG_PATH,
                                        _MAX_RESUME_SEEK as _MAX_SEEK,
                                        setup_logging as _setup_logging)
-    from shimeji.hotkeys import (ACTION_KEYS as _AK,
-                                 DEFAULT_HOTKEYS as _DH, MOD_ALT as _MA,
-                                 MOD_CONTROL as _MC, HotkeyManager as _HK,
-                                 format_spec as _fs, parse_spec as _ps)
     from shimeji.settings import APP_ROOT as _ROOT, DATA_DIR as _DATA_DIR
 
     # ------------------------------------------------------------------
@@ -1439,93 +1435,6 @@ def main() -> int:
             pass
         check(_read_startup_entry() == _before,
               "测试把注册表还原成了原来的样子（不污染用户机器）")
-
-    # ------------------------------------------------------------------
-    section("1.0.6 全局快捷键：解析与往返")
-    check(_ps("Ctrl+Alt+S") == (_MC | _MA, ord("S")),
-          "Ctrl+Alt+S → (Ctrl|Alt, VK_S)")
-    check(_ps("ctrl+s") == (_MC, ord("S")), "小写也认")
-    check(_ps("控制+Alt+S") == (_MC | _MA, ord("S")), "中文修饰键名也认")
-    check(_ps("Ctrl+＋+S") == (_MC, ord("S")), "全角加号也认")
-    check(_ps("S") is None,
-          "不带修饰键 → None（裸键会把那个键从所有程序手里抢走）")
-    check(_ps("") is None, "空串 → None")
-    check(_ps(None) is None, "None（不是字符串）→ None")
-    check(_ps("Ctrl+Alt+QQ") is None, "认不得的键名 → None")
-    check(_ps("Ctrl+A+B") is None, "两个主键 → None")
-    check(_ps("Ctrl+") is None, "只有修饰键、没有主键 → None")
-    check(_ps("Ctrl+F5") == (_MC, 0x74), "F5 → VK_F5(0x74)")
-    check(_ps("Ctrl+F25") is None, "F25 超出 F1~F24 → None")
-    check(_fs(_MC | _MA, ord("S")) == "Ctrl+Alt+S",
-          "format_spec 是 parse_spec 的逆")
-    check(_fs(*_ps("Ctrl+Shift+F7")) == "Ctrl+Shift+F7",
-          "F7 往返一致（界面回显不会变形）")
-
-    check(set(mgr.hotkey_specs()) == set(_AK),
-          "hotkey_specs 覆盖全部四个动作")
-    check(all(mgr.hotkey_specs()[k] == _DH[k] for k in _AK),
-          "默认快捷键与 DEFAULT_HOTKEYS 一致")
-
-    _hk_orig = mgr.settings.get("hotkeys", None)
-    try:
-        mgr.settings.set("hotkeys", {"summon": "Ctrl+Alt+1"})
-        _partial = mgr.hotkey_specs()
-        check(_partial["summon"] == "Ctrl+Alt+1",
-              "只写了一个键时该键生效")
-        check(_partial["dismiss"] == _DH["dismiss"],
-              "其余动作回落到默认值（手改一行不该弄丢另外三个）")
-        mgr.settings.set("hotkeys", {"panel": None})
-        check(mgr.hotkey_specs()["panel"] == "", "显式 null → 解绑（空串）")
-    finally:
-        mgr.settings.set("hotkeys", _hk_orig)
-
-    # ------------------------------------------------------------------
-    section("1.0.6 全局快捷键：注册 / 失败原因 / 注销")
-    from PySide6.QtGui import QGuiApplication as _QGA
-    _on_windows = _QGA.platformName() == "windows"
-
-    mgr.hotkeys.unregister()          # 先把 Manager 自己占的键让出来
-    _hk = _HK(app, dict(_DH))
-    _fails = _hk.apply(dict(_DH), enabled=True)
-    if _on_windows:
-        check(len(_hk.registered) == len(_AK),
-              "四个默认快捷键全部注册成功", f"{_hk.registered} fails={_fails}")
-        check(_fails == {}, "没有任何需要向用户报告的失败项")
-    else:
-        check(all(v == "unsupported platform" for v in _fails.values()),
-              "非 Windows 平台明确报告不支持，而不是静默无反应",
-              str(_fails))
-
-    _hk.unregister()
-    check(not _hk._ids and not _hk._by_id,
-          "unregister 释放了全部热键并清空 id → 动作映射")
-
-    _off = _hk.apply(dict(_DH), enabled=False)
-    check(_off == {} and not _hk._ids, "enabled=False 时一个都不注册")
-
-    _hk.apply({"summon": "Garbage", "dismiss": ""}, enabled=True)
-    check(_hk.failed.get("summon") == "bad spec",
-          "坏配置被逐条记进 failed（用户才知道该改哪一个）", str(_hk.failed))
-    check("dismiss" not in _hk.failed, "空串 = 解绑，不算失败")
-    _hk.unregister()
-
-    _hk_en_orig = mgr.settings.get("hotkeys_enabled", True)
-    mgr.settings.set("hotkeys_enabled", True)
-    mgr.apply_hotkeys()
-    if _on_windows:
-        check(bool(mgr.hotkeys.registered),
-              "Manager.apply_hotkeys() 后自己的键真的注册上了",
-              str(mgr.hotkeys.registered))
-        _hk2 = _HK(app, dict(_DH))
-        _hk2.apply(dict(_DH), enabled=True)
-        check(len(_hk2.failed) == len(_AK),
-              "组合被别的程序/实例占用时逐条报 taken，而不是静默什么都不发生",
-              str(_hk2.failed))
-        _hk2.unregister()
-    else:
-        check(True, "非 Windows 平台不测真实注册占用（已在上一条覆盖）")
-    mgr.settings.set("hotkeys_enabled", _hk_en_orig)
-    mgr.apply_hotkeys()
 
     # ------------------------------------------------------------------
     section("1.0.6 日志入口：路径唯一、文件真的存在")
@@ -1834,13 +1743,6 @@ def main() -> int:
     finally:
         _shutil.rmtree(_d12, ignore_errors=True)
 
-    # 退出前把热键放掉，别留到进程退出时让系统回收。
-    # Release the native hotkeys rather than leaving them for process teardown.
-    try:
-        mgr.hotkeys.unregister()
-    except Exception:  # noqa: BLE001
-        pass
-
     # ------------------------------------------------------------------
     section("1.0.6 角色 / 角色包 独立成页")
     # 这两组原本挤在「常规」页，把那一页拉到很长；它们本身是围绕
@@ -1937,8 +1839,8 @@ def main() -> int:
     # 1.0.5 的 159 项基线同样如此（实测 0xC0000409），**不是新引入的问题**。
     # 所以：结果先打印并 flush，然后用 os._exit 直接结束，不走析构。
     # The exit code must be trustworthy, so skip interpreter teardown entirely.
-    # This script drives real Win32 (real windows, exstyle tweaks, native
-    # hotkeys) and the destruction order at shutdown is not controllable: the
+    # This script drives real Win32 (real windows, exstyle tweaks) and the
+    # destruction order at shutdown is not controllable: the
     # process would die with 0xC0000409 or 127 *after* printing ALL PASS.  The
     # 1.0.5 baseline behaved the same way, so this is pre-existing.
     sys.stdout.flush()

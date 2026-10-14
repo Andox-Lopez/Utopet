@@ -135,7 +135,17 @@ class TaskbarPanel(QWidget):
             row2.addWidget(b)
         outer.addLayout(row2)
 
-        # 第三行：显隐 / 设置 / 退出
+        # 第三行：番茄时钟 —— 单独一行，占满整行宽。
+        # 用户明确要求不要和显隐/设置/退出挤在一行：那三个是「管理类」操作，
+        # 番茄时钟是「开始一段计时」，性质不同；挤一行四个英文也放不下。
+        # The Pomodoro button gets a full row of its own (user request): the
+        # other three are *management* actions while this one *starts*
+        # something, and four buttons in a row cannot fit the English labels.
+        self.btn_pomodoro = QPushButton()
+        self.btn_pomodoro.clicked.connect(lambda: self.manager.open_pomodoro())
+        outer.addWidget(self.btn_pomodoro)
+
+        # 第四行：显隐 / 设置 / 退出
         # 「聚到鼠标旁」曾在 1.0.0 作为面板按钮存在，但它在托盘和宠物右键菜单里
         # 都有，导致同一功能出现三处入口。1.0.5 从面板拿掉，只保留菜单入口。
         # "Gather" used to sit here as well, but it also lives in the tray and
@@ -198,6 +208,7 @@ class TaskbarPanel(QWidget):
         self.btn_summon.setText(t.t("panel.summon"))
         self.btn_dismiss.setText(t.t("panel.dismiss_one"))
         self.btn_dismiss_all.setText(t.t("panel.dismiss_all"))
+        self.btn_pomodoro.setText(t.t("panel.pomodoro"))
         self.btn_hide.setText(t.t("panel.show_hide"))
         self.btn_settings.setText(t.t("panel.settings"))
         self.btn_quit.setText(t.t("panel.quit"))

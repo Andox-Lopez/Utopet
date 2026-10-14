@@ -23,7 +23,7 @@
 
 #define AppName "Utopet 桌宠"
 #define AppNameEn "Utopet Desktop Pet"
-#define AppVersion "1.0.6"
+#define AppVersion "1.0.7"
 #define AppPublisher "Utopet"
 #define AppExeName "Utopet.exe"
 ; 与 1.0.x 保持同一个 GUID：这是同一个产品的升级，改 GUID 会让旧版变成

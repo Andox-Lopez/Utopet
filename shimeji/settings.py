@@ -115,20 +115,12 @@ DEFAULTS = {
     "window_offset": [0, 0, 0, 0],    # X / Y / 宽 / 高 偏移 / rect offsets
     # 系统 / system
     "start_with_windows": False,      # 开机自启 / launch at login
-    # 全局快捷键 / global hotkeys
-    # `hotkeys_enabled` 关掉就一个都不注册。具体键位放在下面这张表里，
-    # 可手工编辑 config\settings.json —— 快捷方式属于「工具类」偏好，
-    # 不值得为它做一套按键捕获控件。
-    # `hotkeys_enabled` off = register nothing.  The bindings live in the table
-    # below and are meant to be hand-edited in config\settings.json: shortcut
-    # prefs are a power-user thing and do not warrant a key-capture widget.
-    "hotkeys_enabled": True,
-    "hotkeys": {
-        "summon": "Ctrl+Alt+S",        # 召唤一只 / summon one
-        "dismiss": "Ctrl+Alt+D",       # 解散一只 / dismiss one
-        "toggle_hidden": "Ctrl+Alt+H",  # 显示 / 隐藏 / show-hide
-        "panel": "Ctrl+Alt+P",         # 打开任务栏面板 / open the panel
-    },
+    # 番茄时钟 / Pomodoro timer
+    "pomodoro_work_min": 25,          # 工作时长 / work length
+    "pomodoro_break_min": 5,          # 短休息 / short break
+    "pomodoro_long_break_min": 15,    # 长休息 / long break
+    "pomodoro_long_every": 4,         # 每几轮一次长休息 / long break every N
+    "pomodoro_pet_react": True,       # 阶段切换时宠物做个动作 / pet reacts
     # 任务栏常驻控制面板：一个普通窗口，可在任务栏固定
     # Always-on taskbar control panel: a normal window that can be pinned
     "taskbar_panel": True,

@@ -13,11 +13,13 @@ which need an engine restart.
 from __future__ import annotations
 
 import os
+import time
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QFrame, QGroupBox, QHBoxLayout,
-                               QHeaderView, QInputDialog, QLabel, QLineEdit,
+                               QHeaderView, QInputDialog,
+                               QLabel, QLineEdit,
                                QListWidget,
                                QMessageBox, QPlainTextEdit, QPushButton,
                                QScrollArea, QSizePolicy, QSpinBox,
@@ -30,7 +32,6 @@ from ..characterpack import (REQUIRED_CONF, export_pack, import_pack,
 from ..custom import CustomConfig
 from ..engine.manager import LOG_PATH, list_characters
 from ..engine.petstate import CAL_CLASSES
-from ..hotkeys import ACTION_KEYS, DEFAULT_HOTKEYS
 from ..i18n import LANGUAGES, get_i18n
 from ..icons import app_icon, logo_pixmap
 from ..names import KIND_NAMES, display_name
@@ -688,50 +689,40 @@ class SettingsWindow(QWidget):
         g2.layout().addRow(t.t("lbl.log"), self.btn_open_log)
         v.addWidget(g2)
 
-        gh = self._group(t.t("grp.hotkeys"))
-        self.hotkeys_enabled = QCheckBox(t.t("lbl.hotkeys_enabled"))
-        self.hotkeys_enabled.setChecked(bool(self.settings.get("hotkeys_enabled", True)))
-        self.hotkeys_enabled.toggled.connect(self._on_hotkeys_toggled)
-        gh.layout().addRow("", self.hotkeys_enabled)
-        self.hotkey_label = QLabel("")
-        self.hotkey_label.setWordWrap(True)
-        gh.layout().addRow("", self.hotkey_label)
-        hint_hk = QLabel(t.t("hint.hotkeys"))
-        hint_hk.setWordWrap(True)
-        hint_hk.setStyleSheet("color: palette(mid); font-size: 11px;")
-        gh.layout().addRow("", hint_hk)
-        v.addWidget(gh)
-        # 填一次现状：注册失败的原因在 Manager 那儿，不在界面里
-        # Fill it in from the Manager: registration failures are known there.
-        self._fill_hotkeys()
+        # 番茄时钟 / Pomodoro timer
+        gp = self._group(t.t("grp.pomodoro"))
+        self.pomo_spins = {}
+        for key, lo, hi in (("pomodoro_work_min", 1, 180),
+                            ("pomodoro_break_min", 1, 60),
+                            ("pomodoro_long_break_min", 1, 90)):
+            sp = QSpinBox()
+            sp.setRange(lo, hi)
+            sp.setValue(int(self.settings.get(key, 25)))
+            sp.valueChanged.connect(
+                lambda val, k=key: self.settings.set(k, int(val)))
+            gp.layout().addRow(t.t("lbl." + key), sp)
+            self.pomo_spins[key] = sp
+        sp_every = QSpinBox()
+        sp_every.setRange(1, 12)
+        sp_every.setValue(int(self.settings.get("pomodoro_long_every", 4)))
+        sp_every.valueChanged.connect(
+            lambda val: self.settings.set("pomodoro_long_every", int(val)))
+        gp.layout().addRow(t.t("lbl.pomodoro_long_every"), sp_every)
+        self.pomo_spins["pomodoro_long_every"] = sp_every
+        self.pomo_pet_react = QCheckBox(t.t("lbl.pomo_pet_react"))
+        self.pomo_pet_react.setChecked(
+            bool(self.settings.get("pomodoro_pet_react", True)))
+        self.pomo_pet_react.toggled.connect(
+            lambda on: self.settings.set("pomodoro_pet_react", bool(on)))
+        gp.layout().addRow("", self.pomo_pet_react)
+        hint_p = QLabel(t.t("hint.pomodoro"))
+        hint_p.setWordWrap(True)
+        hint_p.setStyleSheet("color: palette(mid); font-size: 11px;")
+        gp.layout().addRow("", hint_p)
+        v.addWidget(gp)
 
         v.addStretch(1)
         self.tabs.addTab(w, t.t("tab.advanced"))
-
-    def _on_hotkeys_toggled(self, _checked: bool):
-        """开关一变就重新注册 / Re-register as soon as the switch flips."""
-        try:
-            self.settings.set("hotkeys_enabled", self.hotkeys_enabled.isChecked())
-            self.manager.apply_hotkeys()
-        except Exception:  # noqa: BLE001 - 界面不该因为一次注册失败而中断
-            pass
-        self._fill_hotkeys()
-
-    def _fill_hotkeys(self):
-        """列出当前生效的快捷键 / List the shortcuts currently in effect."""
-        specs = self.manager.hotkey_specs()
-        failed = getattr(self.manager.hotkeys, "failed", None) or {}
-        rows = []
-        for key in ACTION_KEYS:
-            label = self.t.t(f"hotkey.{key}")
-            spec = specs.get(key) or ""
-            if not spec:
-                rows.append(f"{label}：{self.t.t('hotkey.off')}")
-            elif key in failed:
-                rows.append(f"{label}：{spec}（{self.t.t('hotkey.taken')}）")
-            else:
-                rows.append(f"{label}：{spec}")
-        self.hotkey_label.setText("\n".join(rows))
 
     def _open_log(self):
         """
@@ -996,7 +987,6 @@ class SettingsWindow(QWidget):
         # 1.0.6：开机自启真的会写回配置了（此前置灰，不写回）。
         # Since 1.0.6 launch-at-login is written back for real.
         s.set("start_with_windows", self.startup.isChecked())
-        s.set("hotkeys_enabled", self.hotkeys_enabled.isChecked())
         s.set("taskbar_panel", self.taskbar_panel.isChecked())
         s.set("summon_count", self.summon_count.value())
         s.set("spawn_spread", self.spread.isChecked())

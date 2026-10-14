@@ -85,9 +85,17 @@ T = {
     # --- 关于 / about ---
     "ExitSetupTitle": "退出安装",
     "ExitSetupMessage": "你确定要退出安装吗？",
-    "AboutSetupMenuItem": "关于 %(app)s",
-    "AboutSetupTitle": "关于 %(app)s",
-    "AboutSetupMessage": "关于 %(app)s 的更多信息，请访问主页 %(homepage)s。",
+    # ⚠️ 占位符只有两种合法写法，取决于这一条**原文有没有传参**：
+    #   [name] / [name/ver]  —— Inno 内建的消息常量
+    #   %1 %2 ...            —— 位置参数（原文传了几个就用几个）
+    #   `%(app)s` 这种写法 Inno 根本不替换，向导会原样显示字面量 ——
+    #   1.0.6 就因此让卸载向导显示「正在卸载 %(app)s，请稍候…」。
+    # Only two placeholder syntaxes exist, and which one applies depends on
+    # whether the English original takes a parameter.  `%(app)s` is neither:
+    # Inno never substitutes it and the wizard shows it verbatim.
+    "AboutSetupMenuItem": "&关于安装…",
+    "AboutSetupTitle": "关于安装",
+    "AboutSetupMessage": "%1 版本 %2%n%3%n%n%1 主页：%n%4",
     "AboutSetupNote": "本程序附带 © 其作者。仅供个人 / 学习用途。",
     "TranslatorNote": "简体中文翻译由项目提供。",
 
@@ -118,8 +126,8 @@ T = {
     "NewFolderName": "新建文件夹",
 
     # --- 欢迎页 ---
-    "WelcomeLabel1": "欢迎安装 %(app)s",
-    "WelcomeLabel2": "这个向导会一步步指导你把 %(app)s 装到电脑上。开始之前，建议先关闭其他应用程序。%n%n点击「下一步」继续。",
+    "WelcomeLabel1": "欢迎安装 [name]",
+    "WelcomeLabel2": "这个向导会一步步指导你把 [name/ver] 装到电脑上。%n%n开始之前，建议先关闭其他应用程序。点击「下一步」继续。",
 
     # --- 密码页（本程序不用，保留键）---
     "WizardPassword": "输入安装密码",
@@ -250,7 +258,7 @@ T = {
     "InstallingLabel": "正在安装，请稍候…",
     "FinishedHeadingLabel": "安装完成",
     "FinishedLabelNoIcons": "安装程序已成功完成。",
-    "FinishedLabel": "安装程序已成功完成。是否现在运行 %(app)s？",
+    "FinishedLabel": "安装程序已成功完成 [name] 的安装。可以通过创建的快捷方式启动它。",
     "ClickFinish": "点击「完成」退出安装向导。",
     "FinishedRestartLabel": "需要重启电脑才能完成安装。%n%n要现在重启吗？",
     "FinishedRestartMessage": "需要重启电脑才能完成安装。%n%n要现在重启吗？",
@@ -348,35 +356,41 @@ T = {
     "UninstallOpenError": "无法打开卸载程序：%1",
     "UninstallUnsupportedVer": "「%1」的版本太新，本卸载程序不支持。要继续卸载吗？",
     "UninstallUnknownEntry": "卸载条目「%1」不认识，要继续吗？",
-    "ConfirmUninstall": "你确定要卸载 %(app)s 吗？%n%n点击「是」继续。",
+    "ConfirmUninstall": "你确定要完全卸载 %1 及其全部组件吗？%n%n点击「是」继续。",
     "UninstallOnlyOnWin64": "这个程序只能在 64 位版本的 Windows 上卸载。",
     "OnlyAdminCanUninstall": "只有管理员才能完成卸载。请用管理员身份重新运行卸载程序。",
-    "UninstallStatusLabel": "正在卸载 %(app)s，请稍候…",
-    "UninstalledAll": "%(app)s 已经成功卸载。",
+    "UninstallStatusLabel": "正在卸载 %1，请稍候…",
+    "UninstalledAll": "%1 已经成功卸载。",
     "UninstalledMost": "卸载过程中出现了部分错误。你仍然希望继续卸载吗？",
     "UninstalledAndNeedsRestart": "卸载过程中出现了部分错误。要重启电脑吗？",
-    "UninstallDataCorrupted": "卸载数据已损坏，%(app)s 无法被完全卸载。",
+    "UninstallDataCorrupted": "卸载数据文件「%1」已损坏，无法被完全卸载。",
     "ConfirmDeleteSharedFileTitle": "删除共享文件",
     "ConfirmDeleteSharedFile2": "这个共享文件将被删除，因为它不再被任何程序使用。要删除吗？",
     "SharedFileNameLabel": "文件：",
     "SharedFileLocationLabel": "位置：",
     "WizardUninstalling": "正在卸载",
     "StatusUninstalling": "正在卸载，请稍候…",
-    "ShutdownBlockReasonInstallingApp": "正在安装 %(app)s。安装完成前请关闭这个程序。",
-    "ShutdownBlockReasonUninstallingApp": "正在卸载 %(app)s。卸载完成前请关闭这个程序。",
+    "ShutdownBlockReasonInstallingApp": "正在安装 %1。安装完成前请关闭这个程序。",
+    "ShutdownBlockReasonUninstallingApp": "正在卸载 %1。卸载完成前请关闭这个程序。",
 
     # --- 附加 ---
+    # 这一段里的键在 Default.isl 中只存在于 [CustomMessages]，真正的取值来自
+    # 下面的 CUSTOM 表（向导里用 {cm:...} 引用）。这里保留一份是为了键名集中，
+    # 占位符必须跟 CUSTOM 一致用 %1 / %2 —— 写 `%(app)s` 会被 Inno 原样显示。
+    # These keys live only in [CustomMessages]; the values actually used come
+    # from CUSTOM below (referenced as {cm:...}).  Keep them here for a single
+    # list of keys, with the same %1/%2 placeholders as CUSTOM.
     "NameAndVersion": "%1 (%2)",
     "AdditionalIcons": "附加快捷方式：",
     "CreateDesktopIcon": "创建桌面快捷方式",
     "CreateQuickLaunchIcon": "创建快速启动栏快捷方式",
     "ProgramOnTheWeb": "产品主页",
-    "UninstallProgram": "卸载 %(app)s",
-    "LaunchProgram": "运行 %(app)s",
-    "AssocFileExtension": "把 %(ext)s 文件关联到 %(app)s",
-    "AssingFileExtension": "把 %(ext)s 文件关联到 %(app)s",
+    "UninstallProgram": "卸载 %1",
+    "LaunchProgram": "运行 %1",
+    "AssocFileExtension": "把 %1 与 %2 文件类型关联",
+    "AssingFileExtension": "正在把 %1 与 %2 文件类型关联…",
     "AutoStartProgramGroupDescription": "自启动 / 自动运行：",
-    "AutoStartProgram": "启动 %(app)s",
+    "AutoStartProgram": "启动 %1",
     "AddonHostProgramNotFound": "在你选择的文件夹里找不到「%1」。%n%n要继续吗？",
 }
 
@@ -448,6 +462,53 @@ def main() -> int:
                 out.append(m.group(1))
         return out
 
+    def english_value(section_name: str, key: str) -> str | None:
+        """取英文原文里某个键的值 / the English value of one key."""
+        if "[%s]" % section_name not in default_text:
+            return None
+        body = default_text.split("[%s]" % section_name, 1)[1]
+        for line in body.splitlines():
+            if line.startswith("["):
+                break
+            m = re.match(r"^([A-Za-z][A-Za-z0-9]*)\s*=(.*)$", line)
+            if m and m.group(1) == key:
+                return m.group(2).strip()
+        return None
+
+    # ---- 占位符自检 -------------------------------------------------
+    # 只查**无歧义**的两条硬错误。曾试过「译文的占位符必须是英文原文的子集」，
+    # 误报一大片 —— 因为 Inno 有些消息的参数在英文原文里根本不出现
+    # （ErrorCopying 英文就一句话，文件名是 Inno 另外附加的；
+    #  UninstallDisplayNameMark32Bit 则是被拼进 UninstallDisplayName=%1 (%2)
+    #  的片段，英文只有 "32-bit"）。参数怎么传无法从英文反推，所以不比。
+    #
+    # 只保留两条绝不会误报的：
+    #   1. `%(name)s` 这种 Python 风格写法 —— Inno 任何节都不认，必然原样显示
+    #   2. `[name]` / `[name/ver]` 这类内建常量 —— 它们一定出现在英文原文里
+    # Two unambiguous hard checks only.  A "translation's placeholders must be a
+    # subset of the English original" rule produces a flood of false positives,
+    # because some messages take parameters the English never shows.
+    PY_STYLE = re.compile(r"%\([A-Za-z_][A-Za-z0-9_]*\)s")
+    BUILTIN_CONST = re.compile(r"\[[a-z][a-z/]*\]")
+
+    def audit_placeholders(section_name: str, table: dict,
+                           keys: list[str]) -> list[str]:
+        bad = []
+        for k in keys:
+            text = table.get(k)
+            if not text:
+                continue
+            for hit in PY_STYLE.findall(text):
+                bad.append("%s: 译文里出现 %s —— Inno 不认这种写法，"
+                           "向导会原样显示出来" % (k, hit))
+            src = english_value(section_name, k) or ""
+            allowed = set(BUILTIN_CONST.findall(src))
+            used = set(BUILTIN_CONST.findall(text))
+            for hit in sorted(used - allowed):
+                bad.append("%s: 译文用了 %s，英文原文里没有这个常量"
+                           % (k, hit))
+        return bad
+
     msg_keys = keys_of("Messages")
     cm_keys = keys_of("CustomMessages")
     all_keys = msg_keys + cm_keys
@@ -467,6 +528,16 @@ def main() -> int:
 
     miss_msg = report("Messages", T, msg_keys)
     miss_cm = report("CustomMessages", CUSTOM, cm_keys)
+    bad_msg = audit_placeholders("Messages", T, msg_keys)
+    bad_cm = audit_placeholders("CustomMessages", CUSTOM, cm_keys)
+    if bad_msg or bad_cm:
+        print("[FAIL] 占位符有问题（会原样显示在向导里），"
+              "已保留旧的 .isl 未覆写：", flush=True)
+        for b in bad_msg:
+            print("       x", b, flush=True)
+        for b in bad_cm:
+            print("       x", b, flush=True)
+        return 2
 
     out = [HEADER % len(all_keys), "[Messages]"]
     for k in msg_keys:
@@ -485,7 +556,9 @@ def main() -> int:
           flush=True)
     print("     CustomMessages 键 %d 个，翻译 %d 个" % (len(cm_keys), len(cm_keys) - len(miss_cm)),
           flush=True)
-    return 0 if not (miss_msg or miss_cm) else 2
+    if miss_msg or miss_cm:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

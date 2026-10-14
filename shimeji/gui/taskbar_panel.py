@@ -75,11 +75,6 @@ class TaskbarPanel(QWidget):
 
         # 标题行 / header row
         head = QHBoxLayout()
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(8)
-
-        # 标题行 / header row
-        head = QHBoxLayout()
         self.logo_label = QLabel()
         self.logo_label.setPixmap(logo_pixmap(40))
         self.logo_label.setFixedSize(40, 40)
@@ -121,26 +116,6 @@ class TaskbarPanel(QWidget):
         self.summon_spin.setRange(1, 100)
         self.summon_spin.setFixedWidth(64)
         self.summon_spin.setValue(int(self.manager.settings.get("summon_count", 5)))
-        self.summon_spin.setToolTip(self.t.t("panel.summon_count"))
-        self.summon_spin.setAccessibleName(self.t.t("panel.summon_count"))
-        self.summon_spin.valueChanged.connect(self._on_count_changed)
-        self.btn_summon = QPushButton()
-        self.btn_summon.setMinimumWidth(84)
-        self.btn_summon.clicked.connect(self._summon_many)
-        # 第一行：[数量输入] [召唤]
-        # 顺序是「输入框在按钮前面」—— 按钮只写「召唤」，数量一眼就能看到，
-        # 不用去猜它到底是「召唤一只」还是「召唤 5 只」。
-        # 以前是「一次召唤 [5] [召唤一只]」，两个控件都在讲数量，重复且啰嗦。
-        # Row one: [count input] [Summon].  The number sits in front of the
-        # button, so the button can just say "Summon" -- it used to read
-        # "Summon one" right next to a spinbox already showing 5.
-        row1 = QHBoxLayout()
-        self.summon_spin = QSpinBox()
-        self.summon_spin.setRange(1, 100)
-        self.summon_spin.setFixedWidth(64)
-        self.summon_spin.setValue(int(self.manager.settings.get("summon_count", 5)))
-        self.summon_spin.setToolTip(self.t.t("panel.summon_count"))
-        self.summon_spin.setAccessibleName(self.t.t("panel.summon_count"))
         self.summon_spin.valueChanged.connect(self._on_count_changed)
         self.btn_summon = QPushButton()
         self.btn_summon.setMinimumWidth(84)
@@ -182,6 +157,21 @@ class TaskbarPanel(QWidget):
         self.hint_label.setStyleSheet("color: palette(mid); font-size: 11px;")
         outer.addWidget(self.hint_label)
 
+        # 必须在这里填一次文字。
+        #
+        # 所有按钮都是 `QPushButton()`（无文字）建的，文字只在 `_refresh_texts()`
+        # 里设置；而它此前只在「设置里点应用」那条路径上被调到，于是**程序一启动
+        # 面板就是一排空白按钮**，用户得先去点一次「应用」才看得见字 —— 面板是
+        # 用户唯一能看见的入口，空白面板等于「按不到任何东西」。
+        # 构造末尾补这一次调用，`refresh_status()` 才去谈状态。
+        #
+        # Fill the labels here.  Every button is built as a bare `QPushButton()`
+        # and only `_refresh_texts()` gives them text; that used to be reached
+        # exclusively from "Apply" in the settings, so **on a fresh start the
+        # panel was a row of blank buttons** and you had to apply settings once
+        # before any label appeared.  The panel is the only entry point the user
+        # can see, so a blank one means "nothing is clickable".
+        self._refresh_texts()
         self.refresh_status()
 
         # 数量会随分裂 / 解散自己变化，低频轮询足够

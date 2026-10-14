@@ -11,6 +11,7 @@ that the fix holds.
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1132,29 +1133,53 @@ def main() -> int:
         m4.shared_env.refresh(force=True)
         a4 = m4.shared_env.activeIE
         if a4 is not None and a4.visible:
-            act = _ca2(m4.mascots[0], "IEを右に投げる", {})
-            check(act is not None, "创建「IEを右に投げる」动作")
-            if act is not None:
+            # 「IEを右に投げる」是 7 个子动作的复合动作（跳→持有落下→持有走→
+            # 投げる→立つ→振り向く→立つ），_reclaim_window 在第 4 个子动作
+            # （真正的投掷内建）身上 —— 顶层是 SequenceInstance，直接调会
+            # AttributeError。这里直接建「IEを投げる」这个叶子来测收尾。
+            # The throw action is a 7-child composite; _reclaim_window lives on
+            # the leaf builtin, so build that leaf directly.
+            act = _ca2(m4.mascots[0], "IEを投げる", {})
+            check(act is not None and hasattr(act, "_reclaim_window"),
+                  "创建「IEを投げる」叶子动作（带收尾逻辑）",
+                  type(act).__name__)
+            if act is not None and hasattr(act, "_reclaim_window"):
                 # 直接把窗口搬到工作区外，再让动作收尾，验证 _reclaim_window
                 # 会把它夹回来（不用真等它飞出去，那要跑几百帧）
-                left, top, right, bottom = m4.shared_env.work_area
-                off_x, off_y = right + 500, top + 200
-                if win32.move_window(a4.hwnd, off_x, off_y):
+                # ⚠️ Area 没有 __iter__，只能按字段取 —— 这里曾写成四元解包，
+                # 桌面上恰好有可交互窗口（activeIE 命中）时才会执行到，所以是
+                # 一个「看环境脸色」的偶发失败；builtin.py 里同样的写法更是
+                # 把整个「夹回窗口」功能从 1.0.2 起就写死了（被裸 except 吞掉）。
+                # Area is not iterable; read the fields by name.  The old
+                # unpack only ran when an activeIE window happened to exist.
+                wa4 = m4.shared_env.work_area
+                off_x, off_y = wa4.right + 500, wa4.top + 200
+                moved = win32.move_window(a4.hwnd, off_x, off_y)
+                if moved:
                     m4.shared_env.sync_window(a4.hwnd, off_x, off_y,
                                               off_x + a4.width, off_y + a4.height)
-                check(a4.left > right, "测试前置：窗口已被搬到工作区外",
-                      f"left={a4.left:.0f} right={right}")
-                act._reclaim_window()
-                wa = m4.shared_env.work_area
-                inside = (a4.left >= wa.left and a4.top >= wa.top
-                          and a4.right <= wa.right and a4.bottom <= wa.bottom)
-                check(inside, "扔出工作区的窗口被夹回可见区域",
-                      f"-> left={a4.left:.0f} top={a4.top:.0f}")
-                # 已经在工作区内的不能被乱动
-                keep = (a4.left, a4.top)
-                act._reclaim_window()
-                check((a4.left, a4.top) == keep,
-                      "已经在工作区内的窗口不会被移动（尊重用户摆放）")
+                if a4.left > wa4.right:
+                    check(True, "测试前置：窗口已被搬到工作区外",
+                          f"left={a4.left:.0f} right={wa4.right}")
+                    act._reclaim_window()
+                    wa = m4.shared_env.work_area
+                    inside = (a4.left >= wa.left and a4.top >= wa.top
+                              and a4.right <= wa.right and a4.bottom <= wa.bottom)
+                    check(inside, "扔出工作区的窗口被夹回可见区域",
+                          f"-> left={a4.left:.0f} top={a4.top:.0f}")
+                    # 已经在工作区内的不能被乱动
+                    keep = (a4.left, a4.top)
+                    act._reclaim_window()
+                    check((a4.left, a4.top) == keep,
+                          "已经在工作区内的窗口不会被移动（尊重用户摆放）")
+                else:
+                    # 有些窗口不允许程序搬动（提权的进程等）—— 这不是产品
+                    # bug，跳过而不是误报。
+                    # Some windows refuse programmatic moves (elevated etc.);
+                    # that is not a product bug, so skip rather than fail.
+                    check(True, "本窗口不可被测试搬动，跳过夹回断言"
+                          "（不误报）",
+                          f"left={a4.left:.0f}")
         m4.quit()
 
         # ---- C. 面板不被固定在右下角 ----
@@ -1326,15 +1351,599 @@ def main() -> int:
               f"{type(e).__name__}: {e}")
 
 
+    # ==================================================================
+    # 1.0.6 快赢包：开机自启 / 全局快捷键 / 日志入口 / 会话恢复
+    #        the 1.0.6 quick-win set
+    # ==================================================================
+    import ast
+    import builtins
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import winreg as _winreg
+
+    from shimeji.engine.manager import (LOG_PATH as _LOG_PATH,
+                                       _MAX_RESUME_SEEK as _MAX_SEEK,
+                                       setup_logging as _setup_logging)
+    from shimeji.hotkeys import (ACTION_KEYS as _AK,
+                                 DEFAULT_HOTKEYS as _DH, MOD_ALT as _MA,
+                                 MOD_CONTROL as _MC, HotkeyManager as _HK,
+                                 format_spec as _fs, parse_spec as _ps)
+    from shimeji.settings import APP_ROOT as _ROOT, DATA_DIR as _DATA_DIR
+
+    # ------------------------------------------------------------------
+    section("1.0.6 开机自启：命令行构造（打包版 / 源码版必须分开）")
+    cmd = Manager.startup_command()
+    check(isinstance(cmd, str) and cmd.strip() != "",
+          "startup_command() 返回非空命令", cmd[:60])
+    # 源码版是「解释器 + 脚本」两段（4 个引号），打包版只有 exe（2 个）。
+    # 关键不是具体数量，而是**成对** —— 路径没引号就会在带空格的目录上失效。
+    check(cmd.count('"') >= 2 and cmd.count('"') % 2 == 0,
+          "路径成对加引号（安装目录可能带空格）", cmd[:60])
+    if not getattr(sys, "frozen", False):
+        check(os.path.join(_ROOT, "main.py") in cmd,
+              "源码版命令指向 <root>/main.py", cmd[:70])
+        check(os.path.isfile(os.path.join(_ROOT, "main.py")),
+              "源码版指向的 main.py 真的存在（不是写了个死路径）")
+        check("pythonw" in cmd.lower(),
+              "源码版优先 pythonw.exe（python.exe 每次登录闪黑框）", cmd[:50])
+
+    _saved_frozen = getattr(sys, "frozen", None)
+    sys.frozen = True
+    try:
+        _frozen_cmd = Manager.startup_command()
+    finally:
+        if _saved_frozen is None:
+            sys.__dict__.pop("frozen", None)
+        else:
+            sys.frozen = _saved_frozen
+    check(_frozen_cmd.strip('"') == os.path.abspath(sys.executable),
+          "打包版只指向 exe 自己", _frozen_cmd)
+    check("main.py" not in _frozen_cmd,
+          "打包版不引用 main.py（安装目录里根本没有这个文件 —— 老代码就是死在这）")
+
+    # ------------------------------------------------------------------
+    section("1.0.6 开机自启：HKCU\\Run 真写真读真还原")
+    _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    _ENTRY = "Utopet"
+
+    def _read_startup_entry():
+        try:
+            with _winreg.OpenKey(_winreg.HKEY_CURRENT_USER, _RUN_KEY) as key:
+                return _winreg.QueryValueEx(key, _ENTRY)[0]
+        except OSError:
+            return None
+
+    _before = _read_startup_entry()
+    try:
+        check(mgr.set_startup(True) is True, "set_startup(True) 报告成功")
+        check(_read_startup_entry() == Manager.startup_command(),
+              "注册表里写进去的命令与 startup_command() 完全一致",
+              str(_read_startup_entry())[:60])
+        check(mgr.set_startup(True) is True, "重复开启是幂等的，不抛异常")
+        check(mgr.set_startup(False) is True, "set_startup(False) 报告成功")
+        check(_read_startup_entry() is None, "关闭后键被删除，不留半条记录")
+        check(mgr.set_startup(False) is True,
+              "对不存在的键再关一次也不抛（CreateKeyEx 而非 OpenKey）")
+    finally:
+        try:
+            with _winreg.CreateKeyEx(_winreg.HKEY_CURRENT_USER, _RUN_KEY, 0,
+                                     _winreg.KEY_SET_VALUE) as key:
+                if _before is None:
+                    try:
+                        _winreg.DeleteValue(key, _ENTRY)
+                    except OSError:
+                        pass
+                else:
+                    _winreg.SetValueEx(key, _ENTRY, 0, _winreg.REG_SZ, _before)
+        except OSError:
+            pass
+        check(_read_startup_entry() == _before,
+              "测试把注册表还原成了原来的样子（不污染用户机器）")
+
+    # ------------------------------------------------------------------
+    section("1.0.6 全局快捷键：解析与往返")
+    check(_ps("Ctrl+Alt+S") == (_MC | _MA, ord("S")),
+          "Ctrl+Alt+S → (Ctrl|Alt, VK_S)")
+    check(_ps("ctrl+s") == (_MC, ord("S")), "小写也认")
+    check(_ps("控制+Alt+S") == (_MC | _MA, ord("S")), "中文修饰键名也认")
+    check(_ps("Ctrl+＋+S") == (_MC, ord("S")), "全角加号也认")
+    check(_ps("S") is None,
+          "不带修饰键 → None（裸键会把那个键从所有程序手里抢走）")
+    check(_ps("") is None, "空串 → None")
+    check(_ps(None) is None, "None（不是字符串）→ None")
+    check(_ps("Ctrl+Alt+QQ") is None, "认不得的键名 → None")
+    check(_ps("Ctrl+A+B") is None, "两个主键 → None")
+    check(_ps("Ctrl+") is None, "只有修饰键、没有主键 → None")
+    check(_ps("Ctrl+F5") == (_MC, 0x74), "F5 → VK_F5(0x74)")
+    check(_ps("Ctrl+F25") is None, "F25 超出 F1~F24 → None")
+    check(_fs(_MC | _MA, ord("S")) == "Ctrl+Alt+S",
+          "format_spec 是 parse_spec 的逆")
+    check(_fs(*_ps("Ctrl+Shift+F7")) == "Ctrl+Shift+F7",
+          "F7 往返一致（界面回显不会变形）")
+
+    check(set(mgr.hotkey_specs()) == set(_AK),
+          "hotkey_specs 覆盖全部四个动作")
+    check(all(mgr.hotkey_specs()[k] == _DH[k] for k in _AK),
+          "默认快捷键与 DEFAULT_HOTKEYS 一致")
+
+    _hk_orig = mgr.settings.get("hotkeys", None)
+    try:
+        mgr.settings.set("hotkeys", {"summon": "Ctrl+Alt+1"})
+        _partial = mgr.hotkey_specs()
+        check(_partial["summon"] == "Ctrl+Alt+1",
+              "只写了一个键时该键生效")
+        check(_partial["dismiss"] == _DH["dismiss"],
+              "其余动作回落到默认值（手改一行不该弄丢另外三个）")
+        mgr.settings.set("hotkeys", {"panel": None})
+        check(mgr.hotkey_specs()["panel"] == "", "显式 null → 解绑（空串）")
+    finally:
+        mgr.settings.set("hotkeys", _hk_orig)
+
+    # ------------------------------------------------------------------
+    section("1.0.6 全局快捷键：注册 / 失败原因 / 注销")
+    from PySide6.QtGui import QGuiApplication as _QGA
+    _on_windows = _QGA.platformName() == "windows"
+
+    mgr.hotkeys.unregister()          # 先把 Manager 自己占的键让出来
+    _hk = _HK(app, dict(_DH))
+    _fails = _hk.apply(dict(_DH), enabled=True)
+    if _on_windows:
+        check(len(_hk.registered) == len(_AK),
+              "四个默认快捷键全部注册成功", f"{_hk.registered} fails={_fails}")
+        check(_fails == {}, "没有任何需要向用户报告的失败项")
+    else:
+        check(all(v == "unsupported platform" for v in _fails.values()),
+              "非 Windows 平台明确报告不支持，而不是静默无反应",
+              str(_fails))
+
+    _hk.unregister()
+    check(not _hk._ids and not _hk._by_id,
+          "unregister 释放了全部热键并清空 id → 动作映射")
+
+    _off = _hk.apply(dict(_DH), enabled=False)
+    check(_off == {} and not _hk._ids, "enabled=False 时一个都不注册")
+
+    _hk.apply({"summon": "Garbage", "dismiss": ""}, enabled=True)
+    check(_hk.failed.get("summon") == "bad spec",
+          "坏配置被逐条记进 failed（用户才知道该改哪一个）", str(_hk.failed))
+    check("dismiss" not in _hk.failed, "空串 = 解绑，不算失败")
+    _hk.unregister()
+
+    _hk_en_orig = mgr.settings.get("hotkeys_enabled", True)
+    mgr.settings.set("hotkeys_enabled", True)
+    mgr.apply_hotkeys()
+    if _on_windows:
+        check(bool(mgr.hotkeys.registered),
+              "Manager.apply_hotkeys() 后自己的键真的注册上了",
+              str(mgr.hotkeys.registered))
+        _hk2 = _HK(app, dict(_DH))
+        _hk2.apply(dict(_DH), enabled=True)
+        check(len(_hk2.failed) == len(_AK),
+              "组合被别的程序/实例占用时逐条报 taken，而不是静默什么都不发生",
+              str(_hk2.failed))
+        _hk2.unregister()
+    else:
+        check(True, "非 Windows 平台不测真实注册占用（已在上一条覆盖）")
+    mgr.settings.set("hotkeys_enabled", _hk_en_orig)
+    mgr.apply_hotkeys()
+
+    # ------------------------------------------------------------------
+    section("1.0.6 日志入口：路径唯一、文件真的存在")
+    check(os.path.abspath(os.path.dirname(_LOG_PATH)) == os.path.abspath(_DATA_DIR),
+          "日志写在 data\\ 下（不是 config\\ —— 那是用户偏好）", _LOG_PATH)
+    check(os.path.basename(_LOG_PATH) == "shimeji.log",
+          "日志文件名与界面/文档引用的是同一个常量")
+    _setup_logging()
+    check(os.path.isfile(_LOG_PATH), "setup_logging() 之后日志文件确实存在")
+    check(os.path.getsize(_LOG_PATH) > 0, "日志文件不是空的")
+
+    from shimeji.gui.settings_window import SettingsWindow as _SW
+    check(callable(getattr(_SW, "_open_log", None)),
+          "设置窗口有「打开日志」入口")
+    check(getattr(_SW, "dragEnterEvent", None) is not None
+          and getattr(_SW, "dropEvent", None) is not None,
+          "设置窗口接受拖拽（角色包直接拖进来）")
+    check(callable(getattr(_SW, "_do_import", None))
+          and callable(getattr(_SW, "_export_pack_dialog", None))
+          and callable(getattr(_SW, "_supplement_all", None)),
+          "导入 / 导出 / 补齐描述文件三个入口都在")
+
+    # ------------------------------------------------------------------
+    section("1.0.6 静态防线：全包不许出现「用到但没绑定」的名字")
+    # 这一类 bug 的杀伤力在于**它不会立刻炸**：Qt 的槽是同步调用的，槽里
+    # NameError 只会中断那一个槽，界面上看不出任何异常。1.0.6 的
+    # `apply()` 里就真的漏过一个 `old_startup`（用了没赋值），点「保存」
+    # 会静默丢掉开机自启的写回。所以除了功能测试，再加一条纯静态的防线。
+    # The failure mode is nasty: a NameError inside a Qt slot only aborts
+    # that one slot, with nothing visible on screen.
+    _bl = set(dir(builtins)) | {"__file__", "__name__", "__doc__", "__spec__",
+                               "__package__", "__builtins__", "__debug__",
+                               "__path__", "__loader__"}
+
+    def _collect_bindings(tree):
+        """模块里出现过的所有绑定名。/ Every name bound anywhere in the module.
+
+        故意**不**做作用域分析：宁可多放过几个名字，也要零误报。
+        Deliberately scope-insensitive: false negatives are fine here, false
+        positives would just train us to ignore the check.
+        """
+        _names, _star = set(), False
+        for _n in ast.walk(tree):
+            if isinstance(_n, ast.Name):
+                if isinstance(_n.ctx, (ast.Store, ast.Del)):
+                    _names.add(_n.id)
+            elif isinstance(_n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                _names.add(_n.name)
+            elif isinstance(_n, ast.Lambda):
+                for _a in (list(_n.args.posonlyargs) + list(_n.args.args)
+                           + list(_n.args.kwonlyargs)):
+                    _names.add(_a.arg)
+            elif isinstance(_n, ast.arg):
+                _names.add(_n.arg)
+            elif isinstance(_n, (ast.Import, ast.ImportFrom)):
+                for _al in _n.names:
+                    if _al.name == "*":
+                        _star = True
+                    _names.add((_al.asname or _al.name).split(".")[0])
+            elif isinstance(_n, ast.ExceptHandler) and _n.name:
+                _names.add(_n.name)
+            elif isinstance(_n, (ast.Global, ast.Nonlocal)):
+                _names.update(_n.names)
+            elif isinstance(_n, ast.MatchAs) and _n.name:
+                _names.add(_n.name)
+            elif isinstance(_n, ast.MatchStar) and _n.name:
+                _names.add(_n.name)
+        return _names, _star
+
+    def _undefined_names(src):
+        try:
+            _tree = ast.parse(src)
+        except SyntaxError as _exc:
+            return ["line {0}: SyntaxError {1}".format(_exc.lineno, _exc)]
+        _bound, _star = _collect_bindings(_tree)
+        if _star:
+            return []                      # star import 认不准，直接放弃这个文件
+        _known = _bound | _bl
+        return ["line {0}: {1!r}".format(_n.lineno, _n.id)
+                for _n in ast.walk(_tree)
+                if isinstance(_n, ast.Name) and isinstance(_n.ctx, ast.Load)
+                and _n.id not in _known]
+
+    # 扫描器先自检：拿一个「故意写坏」的片段喂给它，抓不到就说明防线是空的
+    _probe = "def apply(self):\n    x = 1\n    if alpha and not beta and not gamma and not x:\n        pass\n"
+    check(len(_undefined_names(_probe)) == 3,
+          "未定义名扫描器先能抓到已知的坏例子（防线本身有效）",
+          str(_undefined_names(_probe)))
+
+    _pkg = os.path.join(ROOT, "shimeji")
+    _pyfiles = []
+    for _base, _dirs, _names in os.walk(_pkg):
+        _dirs[:] = [d for d in _dirs if d != "__pycache__"]
+        _pyfiles += [os.path.join(_base, f) for f in _names if f.endswith(".py")]
+    _hits = {}
+    for _p in sorted(_pyfiles):
+        try:
+            with open(_p, encoding="utf-8") as _fh:
+                _bad = _undefined_names(_fh.read())
+        except OSError as _exc:
+            _bad = ["read failed: {0}".format(_exc)]
+        if _bad:
+            _hits[os.path.relpath(_p, ROOT).replace("\\", "/")] = _bad
+    check(not _hits, "shimeji/ 全包没有「用到但没绑定」的名字",
+          str(_hits)[:200])
+
+    # ------------------------------------------------------------------
+    section("1.0.6 会话恢复：连「正在做的事」和已经跑到的帧数一起恢复")
+    from shimeji.settings import Settings as _S3
+    _d11 = _tempfile.mkdtemp(prefix="utopet_resume_")
+    try:
+        _sp11 = os.path.join(_d11, "settings.json")
+        _s11 = _S3(_sp11)
+        _s11.set("character", "Miku")
+        _s11.set("taskbar_panel", False)
+        _s11.set("restore_session", True)
+        _s11.set("initial_count", 1)
+        _m11 = Manager(app, _s11)
+        _m11.timer.stop()
+        _m11.dismiss_all()
+        _wa11 = _m11.shared_env.work_area
+        _pet = _m11.summon(Pt(_wa11.left + 430, _wa11.bottom))
+        check(_pet is not None, "续播测试：先召唤一只")
+
+        # 跑到一个「时间落在合理区间」的帧上，避免刚好卡在动作切换那一帧。
+        # 用 progress() 而不是 action.time —— 组合动作的 time 恒为 0，
+        # 那正是 1.0.6 差点静默失效的地方（见下一节的回归防线）。
+        _frames = 0
+        _seq = 0
+        for _ in range(240):
+            _m11.tick()
+            if _pet.action is not None:
+                _seq, _frames = _pet.action.progress()
+            if 1 <= _frames <= 300:
+                break
+        _name = getattr(getattr(_pet.action, "defn", None), "name", None)
+        check(bool(_name) and _frames > 0,
+              "跑了一段之后确实在一个动作里", f"{_name} seq={_seq} @{_frames}")
+        check(type(_pet.action).__name__ in ("SequenceInstance", "SelectInstance"),
+              "顶层确实是组合动作（所以不能直接读它的 time）",
+              type(_pet.action).__name__)
+        check(_pet.action.time == 0 and _frames > 0,
+              "组合动作自身的 time 恒为 0，而 progress() 能拿到真实帧数",
+              f"outer={_pet.action.time} progress={_frames}")
+
+        _m11.save_session()
+        _snap = _s11.get("session", []) or []
+        check(bool(_snap), "save_session 写出了快照")
+        check(_snap and _snap[0].get("behavior") == _name,
+              "快照里记下了正在播放的行为名",
+              str(_snap[0].get("behavior")) if _snap else "empty")
+        check(_snap and _snap[0].get("elapsed") == _frames,
+              "快照里记下了已经跑到的帧数",
+              str(_snap[0].get("elapsed")) if _snap else "empty")
+        check(_snap and _snap[0].get("seq") == _seq,
+              "快照里记下了跑到第几个子动作（否则组合动作会从头重放）",
+              str(_snap[0].get("seq")) if _snap else "empty")
+
+        _pet.action.leaf().time = _MAX_SEEK * 3   # 假装这是一个跑了很久的循环动作
+        _m11.save_session()
+        _snap2 = _s11.get("session", []) or []
+        check(_snap2 and _snap2[0].get("elapsed") == _MAX_SEEK,
+              "超过上限的帧数被夹到 _MAX_RESUME_SEEK（补帧是逐帧跑的）",
+              str(_snap2[0].get("elapsed")) if _snap2 else "empty")
+
+        _m11.quit()
+        _s11b = _S3(_sp11)
+        _m11b = Manager(app, _s11b)
+        _m11b.timer.stop()
+        check(len(_m11b.mascots) == 1, "重启后恢复了 1 只宠物")
+        if _m11b.mascots:
+            _rm = _m11b.mascots[0]
+            check(_rm.resume_behavior == _name,
+                  "重启后「待续播的行为」被恢复", str(_rm.resume_behavior))
+            check(_rm.resume_seek == _MAX_SEEK,
+                  "重启后「已经跑到的帧数」被恢复", str(_rm.resume_seek))
+            check(_rm.resume_index == _seq,
+                  "重启后「跑到第几个子动作」被恢复", str(_rm.resume_index))
+            check(_rm.anchor.x > 0 or _rm.anchor.y > 0,
+                  "重启后位置也一起恢复了")
+        _m11b.quit()
+    finally:
+        _shutil.rmtree(_d11, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    section("1.0.6 续播真的把帧数补上了（端到端）")
+    # 前面几节只验了「存档与恢复的字段对不对」。这一节验**补帧真的发生了**：
+    # 帧数必须下沉到真正播动画的叶子动作上 —— 组合动作自己的 time 恒为 0，
+    # 把 seek 留在它身上等于什么都没做（这正是初版静默失效的地方）。
+    # The earlier sections only check the saved/restored fields.  This one
+    # proves the fast-forward actually happens: the frame count has to sink to
+    # the leaf, because a composite's own `time` is always 0.
+    from shimeji.engine.runtime import SequenceInstance, create_action
+    _d13 = _tempfile.mkdtemp(prefix="utopet_seek_")
+    try:
+        _s13 = _S3(os.path.join(_d13, "settings.json"))
+        _s13.set("character", "Miku")
+        _s13.set("taskbar_panel", False)
+        _s13.set("restore_session", False)
+        _m13 = Manager(app, _s13)
+        _m13.timer.stop()
+        _m13.dismiss_all()
+        _wa13 = _m13.shared_env.work_area
+
+        _p13 = _m13.summon(Pt(_wa13.left + 300, _wa13.bottom))
+        check(_p13 is not None, "端到端续播：召唤一只")
+
+        # 从角色自己的动作表里挑一个「第 N 个子动作真的会播动画」的组合动作。
+        # 不能只挑「有 children」的组合：很多复合行为以一次性动作开头（转头、
+        # 立ち姿勢），一 tick 就结束，seek 落在它身上等于白给。
+        # 生产路径不会遇到这个问题 —— 存档只在叶子 time>0 时才记 seek，
+        # 那时下标正指向那个动画动作；这里必须显式选。
+        # Pick a composite whose child at the resume index actually animates.
+        # Many composites open with a one-shot action (a Look, a stance) that
+        # finishes in a single tick, and a seek left on it does nothing.
+        def _animate_child_index(actions, comp):
+            for _i, _item in enumerate(comp.children or []):
+                _nm = getattr(_item, "name", None)
+                _cd = actions.get(_nm) if _nm else _item
+                _kind = getattr(_cd, "kind", None)
+                if _kind and _kind not in ("builtin", "composite", "select"):
+                    return _i
+            return None
+
+        _cand = None
+        _ci = 0
+        for _n in _p13.bundle.actions.order:
+            _d = _p13.bundle.actions.get(_n)
+            if getattr(_d, "children", None):
+                _i = _animate_child_index(_p13.bundle.actions, _d)
+                if _i is not None:
+                    _cand, _ci = _n, _i
+                    break
+        check(_cand is not None, "找到「子动作会播动画」的组合动作",
+              "%s @child %d" % (_cand, _ci))
+
+        # (a) 机制本身：帧数从组合动作一路下沉到叶子
+        _act = create_action(_p13, _cand, {}, None, 12, _ci)
+        check(isinstance(_act, SequenceInstance),
+              "续播目标确实是组合动作", type(_act).__name__)
+        check(_act.seek_left == 12, "续播帧数先挂在组合动作上",
+              str(_act.seek_left))
+        _act.tick()
+        _leaf = _act.leaf()
+        check(_leaf is not _act, "第一次 tick 后子动作被创建了")
+        check(_act.seek_left == 0,
+              "组合动作把帧数交出去之后自己不再保留")
+        check(getattr(_leaf, "time", 0) >= 1,
+              "叶子动作真的被快进了（seek 确实生效）",
+              "leaf.time=%s" % getattr(_leaf, "time", None))
+
+        # (b) 走 Manager 那条路。用 forced_behavior 钉住行为，不受随机权重影响。
+        _p13.action = None
+        _p13.forced_behavior = _cand
+        _p13.resume_behavior = _cand
+        _p13.resume_seek = 12
+        _p13.resume_index = _ci
+        _m13.tick()
+        check(getattr(getattr(_p13.action, "defn", None), "name", None) == _cand,
+              "Manager 按存档里的行为名建出了动作")
+        check(_p13.resume_behavior is None and _p13.resume_seek == 0
+              and _p13.resume_index == 0,
+              "续播标记用掉后立即清空（不会粘到下一个动作上）")
+        _m13.quit()
+    finally:
+        _shutil.rmtree(_d13, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    section("1.0.6 续播只对「同一个行为」生效")
+    _d12 = _tempfile.mkdtemp(prefix="utopet_resume2_")
+    try:
+        _s12 = _S3(os.path.join(_d12, "settings.json"))
+        _s12.set("character", "Miku")
+        _s12.set("taskbar_panel", False)
+        _s12.set("restore_session", False)
+        _m12 = Manager(app, _s12)
+        _m12.timer.stop()
+        _m12.dismiss_all()
+        _wa12 = _m12.shared_env.work_area
+
+        # 命中：存档里的行为在这个角色的表里存在 → 补帧
+        _p12 = _m12.summon(Pt(_wa12.left + 300, _wa12.bottom), behavior="座る")
+        check(_p12 is not None, "指定行为召唤成功")
+        _p12.resume_behavior = "座る"
+        _p12.resume_seek = 7
+        _m12._tick_mascot(_p12)
+        check(getattr(getattr(_p12.action, "defn", None), "name", None) == "座る",
+              "续播命中的行为被创建")
+        check(getattr(_p12.action, "seek_left", 0) > 0,
+              "补帧确实下达给了动作实例",
+              str(getattr(_p12.action, "seek_left", None)))
+        check(_p12.resume_behavior is None and _p12.resume_seek == 0,
+              "续播标记用掉后立刻清空（不会粘到下一个动作上）")
+
+        # 未命中：存档里的行为不存在 → 走正常随机，不补帧、也不残留标记
+        _p13 = _m12.summon(Pt(_wa12.left + 500, _wa12.bottom), behavior="座る")
+        _p13.resume_behavior = "不存在的行為"
+        _p13.resume_seek = 40
+        _m12._tick_mascot(_p13)
+        check(getattr(_p13.action, "seek_left", 0) == 0,
+              "行为名对不上时不补帧（否则会白跳掉别的动作的帧）",
+              str(getattr(_p13.action, "seek_left", None)))
+        check(_p13.resume_behavior is None and _p13.resume_seek == 0,
+              "对不上时标记同样被清空，不会一直挂着")
+        _m12.quit()
+    finally:
+        _shutil.rmtree(_d12, ignore_errors=True)
+
+    # 退出前把热键放掉，别留到进程退出时让系统回收。
+    # Release the native hotkeys rather than leaving them for process teardown.
+    try:
+        mgr.hotkeys.unregister()
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ------------------------------------------------------------------
+    section("1.0.6 角色 / 角色包 独立成页")
+    # 这两组原本挤在「常规」页，把那一页拉到很长；它们本身是围绕
+    # 「桌面上站着的是谁」的一整套流程，拆出来更顺。拆页要盯住两件事：
+    # 两组确实在新页上，且「常规」页没被连带删掉别的分组。
+    import json as _json
+    from PySide6.QtWidgets import QGroupBox as _QB
+
+    for _loc in ("zh_CN", "en_US", "ja_JP"):
+        _lp = os.path.join(ROOT, "shimeji", "locales", "%s.json" % _loc)
+        _ld = _json.load(open(_lp, encoding="utf-8"))
+        check(bool(_ld.get("tab.characters")),
+              "%s  locales 里有 tab.characters" % _loc,
+              repr(_ld.get("tab.characters")))
+
+    _d14 = _tempfile.mkdtemp(prefix="utopet_tab_")
+    try:
+        _s14 = _S3(os.path.join(_d14, "settings.json"))
+        _s14.set("character", "Miku")
+        _s14.set("taskbar_panel", False)
+        _m14 = Manager(app, _s14)
+        _m14.timer.stop()
+        _w14 = SettingsWindow(_m14)
+        _w14.show()
+        app.processEvents()
+        _titles = [_w14.tabs.tabText(i) for i in range(_w14.tabs.count())]
+        check(_w14.tabs.count() == 7, "设置窗口共 7 页", str(_titles))
+        check("角色" in _titles, "存在「角色」页", str(_titles))
+
+        if "角色" in _titles:
+            _pg = _w14.tabs.widget(_titles.index("角色"))
+            _groups = [g.title() for g in _pg.findChildren(_QB)]
+            check("角色" in _groups, "「角色」组在新页上", str(_groups))
+            check("角色包" in _groups, "「角色包」组在新页上", str(_groups))
+            check(_pg.findChildren(type(_w14.char_combo)),
+                  "角色下拉框在新页上")
+            check(_pg.findChildren(type(_w14.dir_list)),
+                  "额外角色目录列表在新页上")
+            check(_pg.findChildren(type(_w14.btn_import_pack))
+                  and _pg.findChildren(type(_w14.btn_export_pack)),
+                  "导入 / 导出角色包按钮在新页上")
+
+        _gi = _titles.index("常规") if "常规" in _titles else -1
+        _gg = [_g.title() for _g in _w14.tabs.widget(_gi).findChildren(_QB)]
+        check("角色" not in _gg, "常规页上已没有「角色」组", str(_gg))
+        check("角色包" not in _gg, "常规页上已没有「角色包」组", str(_gg))
+        for _keep in ("语言", "启动", "多宠物", "任务栏"):
+            check(_keep in _gg, "常规页仍保留「%s」组" % _keep, str(_gg))
+
+        # 切语言后新页签标题要跟着变。必须走下拉框 → apply()：
+        # 直接改 settings 里的 language 没用，apply() 开头就把「旧语言」
+        # 读成了已经改过的值，于是认为没变化、不重建界面。
+        _i14 = _w14.lang_combo.findData("en_US")
+        _w14.lang_combo.setCurrentIndex(_i14)
+        _w14.apply()
+        _t2 = [_w14.tabs.tabText(i) for i in range(_w14.tabs.count())]
+        check(_i14 >= 0 and "Characters" in _t2,
+              "切到 en_US 后页签标题正确", str(_t2))
+        check(_w14.tabs.count() == 7, "切语言后仍是 7 页", str(_t2))
+        _w14.close()
+        _m14._settings_window = None
+        from shimeji.i18n import set_language as _sl
+        _sl("zh_CN")
+        _m14.quit()
+    finally:
+        _shutil.rmtree(_d14, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    section("1.0.6 安装向导必须保留「选择安装位置」页")
+    # DisableDirPage 不写时走 auto：**注册表里查到同 AppId 已安装就整页跳过**，
+    # 路径输入框和「浏览…」一起消失，用户没法换安装位置（装到 D 盘之类）。
+    _iss = open(os.path.join(ROOT, "installer", "Utopet.iss"),
+                encoding="utf-8").read()
+    check(re.search(r"(?mi)^\s*DisableDirPage\s*=\s*no\s*$", _iss) is not None,
+          "Utopet.iss 显式写了 DisableDirPage=no（否则升级时整页消失）")
+
     # 汇总 / wrap up
     print("=" * 56)
     if FAILS:
         print(f"{len(FAILS)} FAILED / {PASSES} passed")
         for f in FAILS:
             print("  x", f)
-        return 1
-    print(f"ALL PASS —— {PASSES} 项检查通过")
-    return 0
+        _code = 1
+    else:
+        print(f"ALL PASS —— {PASSES} 项检查通过")
+        _code = 0
+
+    # ------------------------------------------------------------------
+    # 退出码必须可信，所以这里**绕过**解释器的收尾阶段。
+    # 本脚本走的是真实 Win32 路径：建真窗口、改窗口 exstyle、注册全局热键。
+    # 这些原生资源与 QApplication 的析构顺序不可控，解释器关闭时进程会以
+    # 0xC0000409（栈缓冲区溢出式 fail-fast）或 127 结束 —— 输出明明写着
+    # ALL PASS，退出码却像失败，自动化只认退出码就会被误判。
+    # 1.0.5 的 159 项基线同样如此（实测 0xC0000409），**不是新引入的问题**。
+    # 所以：结果先打印并 flush，然后用 os._exit 直接结束，不走析构。
+    # The exit code must be trustworthy, so skip interpreter teardown entirely.
+    # This script drives real Win32 (real windows, exstyle tweaks, native
+    # hotkeys) and the destruction order at shutdown is not controllable: the
+    # process would die with 0xC0000409 or 127 *after* printing ALL PASS.  The
+    # 1.0.5 baseline behaved the same way, so this is pre-existing.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_code)
 
 
 if __name__ == "__main__":

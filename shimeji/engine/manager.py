@@ -14,16 +14,18 @@ from __future__ import annotations
 import logging
 import os
 import random
+import sys
 
 from PySide6.QtCore import QObject, QTimer, Qt
 from PySide6.QtWidgets import (QApplication, QMenu, QMessageBox,
                              QSystemTrayIcon)
 
 from .. import win32
+from ..hotkeys import ACTION_KEYS, DEFAULT_HOTKEYS, HotkeyManager
 from ..i18n import get_i18n
 from ..icons import app_icon, tray_icon
 from ..names import display_name
-from ..settings import CHARACTERS_DIR, DATA_DIR, Settings
+from ..settings import APP_ROOT, CHARACTERS_DIR, DATA_DIR, Settings
 from ..xml.config import (ActionSet, BehaviorSet, find_conf,
                           load_actions, load_behavior)
 from .brain import Brain
@@ -38,18 +40,31 @@ BEHAVIOR_DRAGGED = "ドラッグされる"
 BEHAVIOR_THROWN = "投げられる"
 BEHAVIOR_FALL = "落下する"
 BEHAVIOR_GATHER = "マウスの周りに集まる"
+#: 会话恢复时最多补多少帧 / how many frames session restore will fast-forward.
+#: 25 fps 下 20000 帧 ≈ 13 分钟；再长就不是「正在做的事」而是一段背景循环了。
+#: At 25 fps that is ~13 minutes; anything longer is not "what it was doing" but
+#: a background loop, and re-syncing it is pointless.
+_MAX_RESUME_SEEK = 20000
 #: 日志 / logger
 log = logging.getLogger("shimeji")
 
+#: 运行日志文件 / the run-time log file.
+#: **界面上那个「打开日志」按钮和这里必须是同一份路径** —— 之前 README 写的是
+#: `data/utopet.log`，实际写的是 `data/shimeji.log`，用户按文档去找只会扑空。
+#: 路径收敛到这一个常量，界面直接引用它，就不会再对不上。
+#: The "Open log" button and this constant must agree: the README used to claim
+#: `data/utopet.log` while the code wrote `data/shimeji.log`, so anyone
+#: following the docs found nothing.  One constant, referenced by the UI.
+LOG_PATH = os.path.join(DATA_DIR, "shimeji.log")
+
 
 def setup_logging():
-    """把日志写进 data/shimeji.log / Send logs to data/shimeji.log."""
+    """把日志写进 data\\shimeji.log / Send logs to data\\shimeji.log."""
     if log.handlers:
         return
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
-        handler = logging.FileHandler(os.path.join(DATA_DIR, "shimeji.log"),
-                                      encoding="utf-8")
+        handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         log.addHandler(handler)
         log.setLevel(logging.INFO)
@@ -108,6 +123,14 @@ class Manager(QObject):
         self._settings_window = None
         self._panel = None
         self._panel_enabled = bool(settings.get("taskbar_panel", True))
+        #: 全局快捷键 / global hotkeys. 注册失败的项目留在 `failed` 里给界面显示。
+        self.hotkeys = HotkeyManager(app, self.hotkey_specs())
+        # Queued 连接：信号是在原生消息分发里发出来的，槽里要弹窗/建窗，
+        # 同步执行等于在消息泵里重入自己。排队到事件循环再跑。
+        # Queued: the signal is emitted from inside native message dispatch, and
+        # the slot opens windows; running it synchronously would re-enter the
+        # message pump.
+        self.hotkeys.triggered.connect(self._on_hotkey, Qt.QueuedConnection)
 
         setup_logging()
         # 关键：先对齐 DPI，否则高缩放屏上宠物会错位
@@ -128,6 +151,7 @@ class Manager(QObject):
         self.reload()
         self._setup_tray()
         self._setup_panel()
+        self.apply_hotkeys()
         self._first_run_guide()
         self.start()
 
@@ -390,6 +414,9 @@ class Manager(QObject):
         m.look_right = look_right if look_right is not None else random.random() < 0.5
         m.previous_behavior = None
         m.action = None
+        m.resume_behavior = None
+        m.resume_seek = 0
+        m.resume_index = 0
         m.menuRequested.connect(self.show_context_menu)
         self.mascots.append(m)
         if not self.hidden:
@@ -420,8 +447,25 @@ class Manager(QObject):
                 # In multi-character mode restore each mascot's own character,
                 # otherwise they would all come back as the default one.
                 lb = item.get("character") if isinstance(item, dict) else None
-                if self.summon(Pt(x, y), look_right=lr, label=lb) is not None:
+                behavior = item.get("behavior") if isinstance(item, dict) else None
+                m = self.summon(Pt(x, y), look_right=lr, label=lb,
+                                behavior=behavior)
+                if m is not None:
                     restored += 1
+                    # 续播：把上次跑到的帧数交给第一个动作补上
+                    # resume: hand the saved frame count to the first action
+                    if behavior:
+                        try:
+                            elapsed = int(item.get("elapsed", 0) or 0)
+                        except (TypeError, ValueError):
+                            elapsed = 0
+                        if elapsed:
+                            m.resume_behavior = behavior
+                            m.resume_seek = max(0, min(elapsed, _MAX_RESUME_SEEK))
+                            try:
+                                m.resume_index = max(0, int(item.get("seq", 0) or 0))
+                            except (TypeError, ValueError):
+                                m.resume_index = 0
             if restored:
                 return
         # 多只时用均匀铺开的落点，避免叠在一起 / spread the landing points
@@ -432,13 +476,51 @@ class Manager(QObject):
             self._panel.refresh_status()
 
     def save_session(self):
-        """记录当前宠物位置 / Snapshot the current mascots."""
-        self.settings.set("session", [
-            {"x": round(m.anchor.x, 1), "y": round(m.anchor.y, 1),
-             "look_right": bool(m.look_right),
-             # 多角色模式记下角色名，下次启动才能恢复成不同的角色
-             "character": (m.bundle.label if m.bundle else self.settings.get("character"))}
-            for m in self.mascots])
+        """
+        记录当前宠物位置与**正在做的事** / Snapshot where each mascot is and what it is doing.
+
+        1.0.6 起连正在播放的行为和已经跑到的帧数一起记下来，重启后接着做同一件事。
+        此前只存锚点与朝向，重启后宠物会从「随机挑一个行为」开始 —— 用户看到的
+        是「刚开程序它就在乱走」，而不是「它还在刚才那件事上」。
+
+        Since 1.0.6 the playing behaviour and its frame count are saved too, so a
+        restart continues the same activity.  Previously only the anchor and
+        facing were stored: on start-up the pet began with a random behaviour, so
+        a restart looked like "it is already wandering off" rather than "still
+        doing what it was doing".
+
+        超出 `_MAX_RESUME_SEEK` 的帧数会被截断 —— 补帧是逐帧跑的，一个跑了很久
+        的循环动作没必要（也不该）在启动时补上万帧。
+        Frame counts beyond `_MAX_RESUME_SEEK` are clamped: the fast-forward runs
+        frame by frame, and a long looping action should not cost tens of
+        thousands of iterations at start-up.
+        """
+        snapshot = []
+        for m in self.mascots:
+            item = {"x": round(m.anchor.x, 1), "y": round(m.anchor.y, 1),
+                    "look_right": bool(m.look_right),
+                    # 多角色模式记下角色名，下次启动才能恢复成不同的角色
+                    # record the character so a restart brings back the mix
+                    "character": (m.bundle.label if m.bundle
+                                  else self.settings.get("character"))}
+            name = getattr(getattr(m.action, "defn", None), "name", None)
+            if name:
+                # **必须问组合动作自己跑到哪儿了，不能读 m.action.time**：
+                # 组合动作（Sequence/Select）从不累加 time，只有真正播动画的
+                # 叶子动作会 —— 原版 Behavior.xml 里几乎全是组合动作，直接读
+                # time 永远是 0，续播就成了一个静默失效的功能。
+                # Must ask the composite for its progress: a composite never
+                # accumulates `time`, only the playing leaf does.
+                try:
+                    seq, elapsed = m.action.progress()
+                except Exception:  # noqa: BLE001 - 存档不该因读进度失败而丢掉
+                    log.exception("read action progress failed")
+                    seq, elapsed = 0, 0
+                item["behavior"] = name
+                item["seq"] = max(0, int(seq))
+                item["elapsed"] = max(0, min(elapsed, _MAX_RESUME_SEEK))
+            snapshot.append(item)
+        self.settings.set("session", snapshot)
         try:
             self.settings.save()
         except OSError:
@@ -464,26 +546,6 @@ class Manager(QObject):
         m = self._summon_with(bundle, anchor, look_right)
         if m is not None:
             m.forced_behavior = behavior
-        return m
-        if anchor is None:
-            wa = self.shared_env.work_area
-            anchor = Pt(random.randint(wa.left + 80, max(wa.left + 81, wa.right - 80)),
-                        wa.bottom)
-        m.anchor = Pt(anchor.x, anchor.y)
-        m.look_right = look_right if look_right is not None else random.random() < 0.5
-        m.previous_behavior = None
-        m.forced_behavior = behavior
-        m.action = None
-        # 每只新宠物都要接上右键菜单信号。
-        # 关键：必须在这里连接，而不是在 _setup_tray() 里 —— 那个函数在 start()
-        # 之前跑完，那时 self.mascots 还是空的，连接了个寂寞，右键永远没反应。
-        # Wire the context menu here, NOT in _setup_tray(): that runs before
-        # start(), when self.mascots is still empty, so the loop connected
-        # nothing and right-click silently did nothing.
-        m.menuRequested.connect(self.show_context_menu)
-        self.mascots.append(m)
-        if not self.hidden:
-            m.show()
         return m
 
     create_mascot = summon
@@ -605,7 +667,19 @@ class Manager(QObject):
             name = self.brain.choose(m)
             if not name:
                 return
-            m.action = create_action(m, name, {})
+            # 会话恢复：**只对同一个行为**续播。存档里的行为在当前角色的表里
+            # 不存在时，行为选择会退回到正常随机，这时给别的动作补帧就是白跳。
+            # Session restore resumes only the *same* behaviour.  If the saved one
+            # is missing from this character's table the normal random pick takes
+            # over, and fast-forwarding some other action would skip frames for
+            # no reason.
+            hit = name == m.resume_behavior
+            seek = m.resume_seek if hit else 0
+            index = m.resume_index if hit else 0
+            m.resume_behavior = None
+            m.resume_seek = 0
+            m.resume_index = 0
+            m.action = create_action(m, name, {}, None, seek, index)
             if m.action is None:
                 return
         if not m.action.tick():
@@ -1099,6 +1173,9 @@ class Manager(QObject):
     def quit(self):
         self.save_session()
         self.stop()
+        # 注销全局快捷键：留着不放会一直占住这个组合。
+        # Release the global hotkeys: otherwise the combination stays reserved.
+        self.hotkeys.unregister()
         self.dismiss_all()
         if self._panel is not None:
             self._panel.timer.stop()
@@ -1126,28 +1203,115 @@ class Manager(QObject):
         self._panel_enabled = want
         if self._panel is not None:
             self._panel.setWindowIcon(app_icon())
+        # 快捷键可能被改过 / the bindings may have changed
+        self.apply_hotkeys()
         self.refresh_ui_texts()
 
-    def set_startup(self, enabled: bool):
-        """开机自启（写入注册表 Run 项）/ Toggle launch-at-login via the registry."""
+    # ------------------------------------------------------------------
+    # 全局快捷键 / global hotkeys
+    # ------------------------------------------------------------------
+    def hotkey_specs(self) -> dict:
+        """
+        读设置里的快捷键表 / Read the hotkey table from the settings.
+
+        缺项用默认值补齐：用户可能只在配置里写了自己关心的那一两个键，
+        其余的照旧该能用。
+        Missing entries fall back to the defaults: a user who hand-edits just
+        one binding should not lose the other three.
+        """
+        stored = self.settings.get("hotkeys", None)
+        specs = dict(DEFAULT_HOTKEYS)
+        if isinstance(stored, dict):
+            for key, value in stored.items():
+                if key in ACTION_KEYS:
+                    specs[key] = "" if value is None else str(value)
+        return specs
+
+    def apply_hotkeys(self) -> dict:
+        """按设置重新注册快捷键；返回 `{动作: 失败原因}` / re-register, returns failures."""
+        enabled = bool(self.settings.get("hotkeys_enabled", True))
+        failed = self.hotkeys.apply(self.hotkey_specs(), enabled=enabled)
+        if failed:
+            log.warning("hotkeys not registered: %s", failed)
+        return failed
+
+    def _on_hotkey(self, action: str):
+        """快捷键被按下 / A global hotkey fired."""
+        log.info("hotkey -> %s", action)
+        if action == "summon":
+            self.summon()
+        elif action == "dismiss":
+            self.dismiss(None)
+        elif action == "toggle_hidden":
+            self.toggle_hidden()
+        elif action == "panel":
+            self.open_taskbar_panel(True)
+
+    @staticmethod
+    def startup_command() -> str:
+        """
+        开机自启该跑哪条命令行 / The command line Windows should run at log-in.
+
+        打包版和源码版**必须分开**处理，这是原来写错的地方：老代码无论哪种
+        情况都写成 `"<解释器>" "<项目根>/main.py"`，而打包后
+        `sys.executable` 已经是 `Utopet.exe`、`main.py` 又根本没被塞进安装目录 ——
+        于是自启项里的命令指向一个不存在的文件，Windows 每次登录都静默失败
+        （自启项「有」，但程序从来不会起来）。
+
+        Frozen and source builds must be handled separately.  The old code always
+        emitted `"<interpreter>" "<root>/main.py"`, but in a packaged build
+        `sys.executable` is already `Utopet.exe` and `main.py` is not shipped at
+        all — so the entry pointed at a missing file and every log-in failed
+        silently.  The entry existed; the program never started.
+
+        源码版优先用 `pythonw.exe`：它不创建控制台窗口，而 `python.exe` 会在
+        每次登录时闪一个黑框出来。
+        The source build prefers `pythonw.exe`, which creates no console window;
+        `python.exe` would flash a black box on every log-in.
+        """
+        if getattr(sys, "frozen", False):
+            return '"%s"' % os.path.abspath(sys.executable)
+        exe = os.path.abspath(sys.executable or "")
+        candidate = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.exists(candidate):
+            exe = candidate
+        script = os.path.join(APP_ROOT, "main.py")
+        return '"%s" "%s"' % (exe, script)
+
+    def set_startup(self, enabled: bool) -> bool:
+        """
+        开机自启（写 HKCU 的 Run 项）/ Toggle launch-at-login via the registry.
+
+        用 `CreateKeyEx` 而不是 `OpenKey`：Run 项在某些精简系统/新账户上
+        还不存在，`OpenKey` 会直接抛 `FileNotFoundError`，于是「勾上自启」
+        静默失败 —— 用户看到勾选框是勾着的，实际什么也没写。
+        `CreateKeyEx` rather than `OpenKey`: the Run key does not exist on some
+        trimmed systems and fresh profiles, and `OpenKey` raises immediately, so
+        ticking the box silently did nothing while the box stayed ticked.
+
+        返回是否真的成功 / returns whether it actually worked.
+        """
         try:
-            import sys
             import winreg
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                 r"Software\Microsoft\Windows\CurrentVersion\Run",
-                                 0, winreg.KEY_SET_VALUE)
-            name = "Utopet"
-            if enabled:
-                exe = sys.executable
-                script = os.path.join(os.path.dirname(os.path.dirname(
-                    os.path.abspath(__file__))), "main.py")
-                winreg.SetValueEx(key, name, 0, winreg.REG_SZ,
-                                  '"%s" "%s"' % (exe, script))
-            else:
-                try:
-                    winreg.DeleteValue(key, name)
-                except FileNotFoundError:
-                    pass
-            winreg.CloseKey(key)
-        except Exception:
+        except ImportError:      # 非 Windows，不该发生但别炸
+            return False
+        name = "Utopet"
+        try:
+            with winreg.CreateKeyEx(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                    0, winreg.KEY_SET_VALUE) as key:
+                if enabled:
+                    winreg.SetValueEx(key, name, 0, winreg.REG_SZ,
+                                      self.startup_command())
+                else:
+                    try:
+                        winreg.DeleteValue(key, name)
+                    except FileNotFoundError:
+                        pass
+            log.info("startup entry %s: %s", "set" if enabled else "removed",
+                     self.startup_command() if enabled else name)
+            return True
+        except OSError:
             log.exception("startup toggle failed")
+            return False

@@ -23,7 +23,7 @@
 
 #define AppName "Utopet 桌宠"
 #define AppNameEn "Utopet Desktop Pet"
-#define AppVersion "1.0.5"
+#define AppVersion "1.0.6"
 #define AppPublisher "Utopet"
 #define AppExeName "Utopet.exe"
 ; 与 1.0.x 保持同一个 GUID：这是同一个产品的升级，改 GUID 会让旧版变成
@@ -60,6 +60,16 @@ AppPublisher={#AppPublisher}
 AppComments=桌面宠物 / Desktop mascot — Python + PySide6 重制版
 DefaultDirName={autopf}\Utopet
 DefaultGroupName={#AppName}
+; ⚠️ DisableDirPage 必须显式写 no。
+;   不写走的是 auto：**注册表里查到同 AppId 已安装，就整页不显示** ——
+;   「选择安装位置」连同路径输入框和「浏览…」一起消失，用户完全没法改路径
+;   （现象：第二次装同一个程序时目录页不见了，只剩默认路径）。
+;   官方原文：「If this is set to auto ... it will not show the Select
+;   Destination Location wizard page. If the page is not shown, it will always
+;   use the default directory name.」
+;   这里是 1.0.5→1.0.6 升级，用户最可能想改的就是安装位置（Program Files 要
+;   管理员权限、常有人想装到 D 盘），所以宁可每次都给。
+DisableDirPage=no
 DisableProgramGroupPage=auto
 ; ⚠️ 不要开 PrivilegesRequiredOverridesAllowed=dialog。
 ;   开了之后向导会问「为所有用户安装 / 仅为我安装」，两者的差别是致命的：

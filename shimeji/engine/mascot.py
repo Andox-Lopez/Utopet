@@ -188,6 +188,20 @@ class Mascot(QWidget):
         #: is already holding the mascot and any delay feels broken.
         self.pending_behaviors: list[str] = []
 
+        #: 会话恢复用：上次退出时正在播放的行为名与已经跑了多少帧。
+        #: 下一个动作创建时会**只对同名行为**生效（见 `Manager._tick_mascot`）：
+        #: 存档里的行为在新角色表里不存在时，行为选择会自动退回到正常随机，
+        #: 这时候把 `resume_seek` 用在别的动作上就会莫名其妙地跳帧。
+        #: Session-restore state: the behaviour that was playing when the app was
+        #: closed, and how many frames into it we were.  It is applied only when
+        #: the *same* behaviour comes up (see `Manager._tick_mascot`): if the
+        #: saved behaviour is missing from the character's table the normal
+        #: random pick takes over, and applying the seek to some other action
+        #: would skip frames for no reason.
+        self.resume_behavior: str | None = None
+        self.resume_seek: int = 0
+        self.resume_index: int = 0
+
         flags = Qt.FramelessWindowHint | Qt.Tool | Qt.NoDropShadowWindowHint
         if always_on_top:
             flags |= Qt.WindowStaysOnTopHint

@@ -17,19 +17,24 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QFrame, QGroupBox, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QListWidget,
+                               QHeaderView, QInputDialog, QLabel, QLineEdit,
+                               QListWidget,
                                QMessageBox, QPlainTextEdit, QPushButton,
                                QScrollArea, QSizePolicy, QSpinBox,
                                QStackedWidget,
                                QTabWidget, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
+from ..characterpack import (REQUIRED_CONF, export_pack, import_pack,
+                             is_supported_source, supplement_conf)
 from ..custom import CustomConfig
-from ..engine.manager import list_characters
+from ..engine.manager import LOG_PATH, list_characters
 from ..engine.petstate import CAL_CLASSES
+from ..hotkeys import ACTION_KEYS, DEFAULT_HOTKEYS
 from ..i18n import LANGUAGES, get_i18n
 from ..icons import app_icon, logo_pixmap
 from ..names import KIND_NAMES, display_name
+from ..settings import CHARACTERS_DIR
 from .action_editor import ActionEditor
 
 __all__ = ["SettingsWindow"]
@@ -48,6 +53,13 @@ class SettingsWindow(QWidget):
         self.setWindowTitle(self.t.t("settings.title"))
         self.setWindowIcon(app_icon())
         self.resize(760, 600)
+        # 接受拖放：把角色包 zip 或角色文件夹直接拖进来就导入。
+        # 这是「导入角色包」最自然的入口 —— 用户手上就是那个文件，
+        # 拖一下比「点按钮 → 在对话框里一路点进目录」少四步。
+        # Accept drops: dragging a pack zip or folder in imports it.  That is the
+        # natural gesture -- the file is already in the user's hand, and dragging
+        # it saves the four clicks of navigating a file dialog.
+        self.setAcceptDrops(True)
         self._outer = QVBoxLayout(self)
         self.tabs = QTabWidget()
         self._outer.addWidget(self.tabs, 1)
@@ -58,6 +70,7 @@ class SettingsWindow(QWidget):
     def _build_tabs(self):
         self.tabs.clear()
         self._tab_general()
+        self._tab_characters()
         self._tab_appearance()
         self._tab_behavior()
         self._tab_actions()
@@ -146,8 +159,31 @@ class SettingsWindow(QWidget):
         gtb = self._group(t.t("grp.taskbar"))
         self.taskbar_panel = QCheckBox(t.t("lbl.taskbar_panel"))
         self.taskbar_panel.setChecked(bool(self.settings.get("taskbar_panel", True)))
-        gt.layout().addRow("", self.taskbar_panel)
-        v.addWidget(gt)
+        # 1.0.6 修：这两行原来写的是 `gt`（多宠物组），于是「任务栏」这个分组
+        # 从来没显示过，勾选框跑到「多宠物」里去了，`gt` 还被 addWidget 了两次。
+        # 分组标题和被归入的控件必须一致，否则用户按标题找不到东西。
+        # Fixed in 1.0.6: these two lines used `gt` (the multi-pet group), so the
+        # "Taskbar" group never appeared and its checkbox lived under "multi-pet";
+        # `gt` was also added to the layout twice.
+        gtb.layout().addRow("", self.taskbar_panel)
+        v.addWidget(gtb)
+
+        # 「角色」与「角色包」两组在 1.0.6 之后独立成页（`_tab_characters`）。
+        # 挤在常规页里时，角色列表 + 四个导入导出按钮把这一页拉得很长，
+        # 而这两件事本身是围绕「桌面上站着的是谁」的一整套流程，放一起更顺。
+        # The character and character-pack groups moved to their own page in
+        # 1.0.6: they form one workflow ("who is on screen") and they made the
+        # General page unreasonably tall.
+        v.addStretch(1)
+        self.tabs.addTab(w, t.t("tab.general"))
+
+    # ------------------------------------------------------------------
+    # 角色 / characters
+    # ------------------------------------------------------------------
+    def _tab_characters(self):
+        t = self.t
+        w = QWidget()
+        v = QVBoxLayout(w)
 
         g2 = self._group(t.t("grp.character"))
         self.char_combo = QComboBox()
@@ -156,6 +192,10 @@ class SettingsWindow(QWidget):
         self.dir_list = QListWidget()
         for d in self.settings.get("character_dirs", []) or []:
             self.dir_list.addItem(d)
+        # 独占一页后列表可以大一点，但别让它撑满整页 —— 上下留白才不晃眼。
+        # A list on a page of its own may grow, but not to fill the whole page.
+        self.dir_list.setMinimumHeight(170)
+        self.dir_list.setMaximumHeight(280)
         dirs_row = QHBoxLayout()
         dirs_row.addWidget(self.dir_list, 1)
         btns = QVBoxLayout()
@@ -169,8 +209,28 @@ class SettingsWindow(QWidget):
         dirs_row.addLayout(btns)
         g2.layout().addRow(t.t("lbl.character_dirs"), dirs_row)
         v.addWidget(g2)
+
+        gp = self._group(t.t("grp.pack"))
+        pack_row = QHBoxLayout()
+        self.btn_import_pack = QPushButton(t.t("btn.import_pack"))
+        self.btn_import_folder = QPushButton(t.t("btn.import_folder"))
+        self.btn_export_pack = QPushButton(t.t("btn.export_pack"))
+        self.btn_supplement = QPushButton(t.t("btn.supplement"))
+        self.btn_import_pack.clicked.connect(self._import_pack_dialog)
+        self.btn_import_folder.clicked.connect(self._import_folder_dialog)
+        self.btn_export_pack.clicked.connect(self._export_pack_dialog)
+        self.btn_supplement.clicked.connect(self._supplement_all)
+        for b in (self.btn_import_pack, self.btn_import_folder,
+                  self.btn_export_pack, self.btn_supplement):
+            pack_row.addWidget(b)
+        gp.layout().addRow("", pack_row)
+        self.pack_note = QLabel(t.t("hint.pack_drop"))
+        self.pack_note.setWordWrap(True)
+        self.pack_note.setStyleSheet("color: palette(mid); font-size: 11px;")
+        gp.layout().addRow("", self.pack_note)
+        v.addWidget(gp)
         v.addStretch(1)
-        self.tabs.addTab(w, t.t("tab.general"))
+        self.tabs.addTab(w, t.t("tab.characters"))
 
     def _sync_clone_state(self):
         """
@@ -277,9 +337,23 @@ class SettingsWindow(QWidget):
         self.max_spin.setValue(int(self.settings.get("max_count", 50)))
         g.layout().addRow(t.t("lbl.max_count"), self.max_spin)
 
-        self.clone = QCheckBox(t.t("lbl.self_clone"))
-        self.clone.setChecked(bool(self.settings.get("self_cloning_enabled", True)))
-        g.layout().addRow("", self.clone)
+        # 「允许自我增殖」不在这里建 —— 它住在「常规 → 多宠物」组里。
+        #
+        # 这正是用户截图指出的「两个复选框重复了」：1.1.0 回滚时两个标签页
+        # 各建了一次 `self.clone`，后建的把先建的覆盖，于是两页各显示一个
+        # 勾选框，而 `_sync_clone_state()` 的置灰与互斥提示、`apply()` 读到的
+        # 状态，全部只作用在**第二个**上 —— 第一个成了永远不受控的幽灵控件。
+        # 同一个 `self.xxx` 在两个标签页里建两次，就是这类 bug 的全部来源。
+        # 养成开关属于「多宠物」组：它和「多角色共存」互斥，提示文字也在那儿。
+        #
+        # The self-cloning checkbox is NOT built here -- it lives in
+        # "General > Multi-pet".  This is the reported "two checkboxes say the
+        # same thing": the 1.1.0 rollback left one copy in each tab, the second
+        # assignment shadowed the first, so both tabs showed a box while
+        # `_sync_clone_state()` (grey-out + the exclusion note) and `apply()` all
+        # talked to the *second* one only.  The first was an uncontrolled ghost.
+        # Cloning belongs with multi-character mode: the two are mutually
+        # exclusive and the explanation lives there.
 
         # 爬窗和扔窗是两个独立开关。以前只有一个「允许与窗口互动」同时管着
         # 两件事：想关掉「扔窗户」（窗户被扔出屏幕就找不回来）就得连爬墙一起
@@ -583,36 +657,247 @@ class SettingsWindow(QWidget):
         v.addWidget(g)
 
         g2 = self._group(t.t("grp.maintenance"))
-        # 开机自启：功能保留在界面上，但**置灰 + 删除线**，标为待开发。
+        # 开机自启（1.0.6 起真正可用）。
         #
-        # 为什么留着这一行而不是删掉：直接删，用户会以为这功能从来不存在；
-        # 留着置灰，等于明确告知「有眉目了，还没做完」，将来能接回去。
-        # 只灰不划线会被当成 bug（怎么点不动？），只划线又看不出该不该点，
-        # 两者必须同时有。
-        # Launch-at-login: kept on screen but struck through and disabled,
-        # pending development.  Deleting the row would suggest the feature
-        # never existed; leaving it visible greyed out says "planned, not
-        # done".  Both the strike and the grey are needed.
-        # 置灰 + 删除线，标为待开发：功能保留在界面上但点不动。
-        # 直接删掉会让人以为这功能从来不存在；留着置灰等于明确告知
-        # 「有眉目了，还没做完」。只灰不划线会被当成 bug，只划线又看不出
-        # 该不该点，所以两者同时给。
-        # Kept but disabled: deleting it would suggest the feature never
-        # existed; a struck-through grey row says "planned, not done".
-        self.startup = QCheckBox(t.t("lbl.startup") + "（待开发）")
-        self.startup.setObjectName("disabled-planned")
+        # 1.0.4 / 1.0.5 期间这一行是置灰 + 删除线 + 标「待开发」，而且**不写回
+        # 配置** —— 因为当时的实现确实是坏的：无论源码版还是打包版都写成
+        # `"<解释器>" "<项目根>/main.py"`，打包后那个 main.py 根本不在安装目录里，
+        # 于是自启项「有」，程序却永远不会起来。现在 `Manager.startup_command()`
+        # 按 `sys.frozen` 分支处理，所以不再替用户挡着这个功能。
+        # Launch-at-login really works as of 1.0.6.  Through 1.0.4 / 1.0.5 the row
+        # was greyed out, struck through and marked "planned", and it never wrote
+        # the setting back -- because the implementation was broken: both builds
+        # emitted `"<interpreter>" "<root>/main.py"`, and in a packaged build that
+        # main.py is not shipped, so the entry existed but the program never
+        # started.
+        self.startup = QCheckBox(t.t("lbl.startup"))
         self.startup.setChecked(bool(self.settings.get("start_with_windows", False)))
-        self.startup.setEnabled(False)
-        # 不可用就别让它偷偷改配置：置灰的同时也不再写回 settings。
-        # A disabled widget must not silently mutate the config either.
-        self._startup_editable = False
         g2.layout().addRow("", self.startup)
+
         b_open = QPushButton(self.settings.custom_xml)
         b_open.clicked.connect(self._open_custom)
         g2.layout().addRow("custom.xml", b_open)
+
+        # 日志入口。日志一直在写，但**没有入口等于没有** —— 用户来报问题时
+        # 我们只能说「去 data 目录里找那个 log」，而多数人并不知道 data 在哪。
+        # A way in to the log.  It was always being written, but without an entry
+        # point it may as well not exist: "look in the data folder" is not an
+        # answer for someone who does not know where that is.
+        self.btn_open_log = QPushButton(t.t("btn.open_log"))
+        self.btn_open_log.clicked.connect(self._open_log)
+        g2.layout().addRow(t.t("lbl.log"), self.btn_open_log)
         v.addWidget(g2)
+
+        gh = self._group(t.t("grp.hotkeys"))
+        self.hotkeys_enabled = QCheckBox(t.t("lbl.hotkeys_enabled"))
+        self.hotkeys_enabled.setChecked(bool(self.settings.get("hotkeys_enabled", True)))
+        self.hotkeys_enabled.toggled.connect(self._on_hotkeys_toggled)
+        gh.layout().addRow("", self.hotkeys_enabled)
+        self.hotkey_label = QLabel("")
+        self.hotkey_label.setWordWrap(True)
+        gh.layout().addRow("", self.hotkey_label)
+        hint_hk = QLabel(t.t("hint.hotkeys"))
+        hint_hk.setWordWrap(True)
+        hint_hk.setStyleSheet("color: palette(mid); font-size: 11px;")
+        gh.layout().addRow("", hint_hk)
+        v.addWidget(gh)
+        # 填一次现状：注册失败的原因在 Manager 那儿，不在界面里
+        # Fill it in from the Manager: registration failures are known there.
+        self._fill_hotkeys()
+
         v.addStretch(1)
         self.tabs.addTab(w, t.t("tab.advanced"))
+
+    def _on_hotkeys_toggled(self, _checked: bool):
+        """开关一变就重新注册 / Re-register as soon as the switch flips."""
+        try:
+            self.settings.set("hotkeys_enabled", self.hotkeys_enabled.isChecked())
+            self.manager.apply_hotkeys()
+        except Exception:  # noqa: BLE001 - 界面不该因为一次注册失败而中断
+            pass
+        self._fill_hotkeys()
+
+    def _fill_hotkeys(self):
+        """列出当前生效的快捷键 / List the shortcuts currently in effect."""
+        specs = self.manager.hotkey_specs()
+        failed = getattr(self.manager.hotkeys, "failed", None) or {}
+        rows = []
+        for key in ACTION_KEYS:
+            label = self.t.t(f"hotkey.{key}")
+            spec = specs.get(key) or ""
+            if not spec:
+                rows.append(f"{label}：{self.t.t('hotkey.off')}")
+            elif key in failed:
+                rows.append(f"{label}：{spec}（{self.t.t('hotkey.taken')}）")
+            else:
+                rows.append(f"{label}：{spec}")
+        self.hotkey_label.setText("\n".join(rows))
+
+    def _open_log(self):
+        """
+        打开运行日志 / Open the run-time log.
+
+        日志还不存在时退而打开它所在的目录，而不是弹「文件不存在」——
+        「打开了 data 目录」本身就是用户想要的那个结果。
+        If the log does not exist yet, open its folder instead of complaining:
+        "here is the data folder" is what the user was after anyway.
+        """
+        if os.path.exists(LOG_PATH):
+            try:
+                os.startfile(LOG_PATH)  # noqa: S606 - Windows-only convenience
+                return
+            except OSError:
+                pass
+        folder = os.path.dirname(LOG_PATH)
+        try:
+            os.makedirs(folder, exist_ok=True)
+            os.startfile(folder)  # noqa: S606 - Windows-only convenience
+        except OSError:
+            QMessageBox.information(self, self.t.t("settings.title"), LOG_PATH)
+
+    # ------------------------------------------------------------------
+    # 角色包 / character packs
+    # ------------------------------------------------------------------
+    def _import_pack_dialog(self):
+        """选一个 zip 导入 / Pick a zip and import it."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.t.t("pack.pick_import"), "", "*.zip")
+        if path:
+            self._do_import(path)
+
+    def _import_folder_dialog(self):
+        """选一个角色文件夹导入 / Pick a folder and import it."""
+        path = QFileDialog.getExistingDirectory(
+            self, self.t.t("pack.pick_folder"), "")
+        if path:
+            self._do_import(path)
+
+    def _do_import(self, src: str):
+        """导入并汇报结果 / Import and report the outcome."""
+        report = import_pack(src, CHARACTERS_DIR)
+        t = self.t
+        if not report.ok:
+            QMessageBox.warning(self, t.t("settings.title"),
+                                t.t("pack.failed") % report.error)
+            return
+        if report.added_conf and report.renamed_from:
+            msg = t.t("pack.imported_both") % (report.name, report.renamed_from,
+                                               ", ".join(report.added_conf))
+        elif report.added_conf:
+            msg = t.t("pack.imported_conf") % (report.name,
+                                               ", ".join(report.added_conf))
+        elif report.renamed_from:
+            msg = t.t("pack.imported_renamed") % (report.name,
+                                                 report.renamed_from)
+        else:
+            msg = t.t("pack.imported") % report.name
+        QMessageBox.information(self, t.t("settings.title"), msg)
+        self._refresh_characters()
+
+    def _export_pack_dialog(self):
+        """选一个角色导出成 zip / Pick a character and export it as a zip."""
+        chars = list_characters(self.settings)
+        if not chars:
+            QMessageBox.warning(self, self.t.t("settings.title"),
+                                self.t.t("msg.no_character"))
+            return
+        labels = [lb for lb, _ in chars]
+        current = self.settings.get("character", "")
+        index = labels.index(current) if current in labels else 0
+        # 单独问一次「导出哪个」，不借用「当前角色」下拉：那个下拉改的是
+        # 正在用的角色，让它兼职做导出选择器，用户点完保存就莫名其妙换角色了。
+        # Ask separately rather than reusing the "current character" combo:
+        # that combo changes which character is in use, so overloading it as an
+        # export picker would silently switch characters on save.
+        label, ok = QInputDialog.getItem(self, self.t.t("pack.export_title"),
+                                         self.t.t("pack.select_export"),
+                                         labels, index, False)
+        if not ok or not label:
+            return
+        char_dir = dict(chars).get(label, "")
+        dest, _ = QFileDialog.getSaveFileName(
+            self, self.t.t("pack.pick_export"),
+            os.path.join(os.path.expanduser("~"), f"{label}.zip"), "*.zip")
+        if not dest:
+            return
+        if not dest.lower().endswith(".zip"):
+            dest += ".zip"
+        # supplement=True：导出物一律带齐 conf，别人拿到就能用；
+        # 临时副本上补齐，用户自己的目录一个字节都不动。
+        # supplement=True so the export always carries a full conf\ and opens
+        # elsewhere; it is filled in on a temp copy, leaving the user's folder
+        # untouched.
+        report = export_pack(char_dir, dest, supplement=True)
+        if report.ok:
+            QMessageBox.information(self, self.t.t("settings.title"),
+                                    self.t.t("pack.exported") % dest)
+        else:
+            QMessageBox.warning(self, self.t.t("settings.title"),
+                                self.t.t("pack.failed_export") % report.error)
+
+    def _supplement_all(self):
+        """
+        给所有角色补齐缺失的描述文件 / Fill in missing description files everywhere.
+
+        做成「全扫一遍」而不是「对当前角色」：这件事本身就是修坏包，
+        而坏包有几只、坏在哪一只，用户多半是不知道的（现象是「导入后就报错」）。
+        幂等，只补缺的，已有的一律不动。
+        A sweep rather than a per-character action: the point is repairing broken
+        packs, and the user generally does not know how many are broken or which
+        one -- the symptom is just "it errors after importing".  Idempotent:
+        only missing files are added.
+        """
+        total = 0
+        for _label, directory in list_characters(self.settings):
+            total += len(supplement_conf(directory))
+        if total:
+            QMessageBox.information(
+                self, self.t.t("settings.title"),
+                self.t.t("pack.supplemented") % total)
+        else:
+            QMessageBox.information(
+                self, self.t.t("settings.title"),
+                self.t.t("pack.supplement_none"))
+
+    def _refresh_characters(self):
+        """导入后刷新角色下拉（新角色立刻可选）/ Refresh the combo after an import."""
+        self._fill_characters()
+
+    # ------------------------------------------------------------------
+    # 拖放导入 / drag & drop import
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _drop_source(event) -> str:
+        """从拖放事件里取第一个能认的来源 / First usable path in a drop event."""
+        try:
+            mime = event.mimeData()
+            if not mime.hasUrls():
+                return ""
+            for url in mime.urls():
+                path = url.toLocalFile()
+                if path and is_supported_source(path):
+                    return path
+        except (AttributeError, TypeError):
+            return ""
+        return ""
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        if self._drop_source(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        if self._drop_source(event):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):  # noqa: N802
+        src = self._drop_source(event)
+        if not src:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self._do_import(src)
 
     def _open_custom(self):
         path = self.settings.custom_xml
@@ -679,6 +964,7 @@ class SettingsWindow(QWidget):
         old_char = s.get("character", "")
         old_scale = float(s.get("scale", 1.0))
         old_top = bool(s.get("always_on_top", True))
+        old_startup = bool(s.get("start_with_windows", False))
 
         s.set("language", self.lang_combo.currentData() or "zh_CN")
         s.set("bilingual", self.bilingual.isChecked())
@@ -707,14 +993,10 @@ class SettingsWindow(QWidget):
         s.set("titles", [x.strip() for x in self.titles_edit.toPlainText().splitlines()
                          if x.strip()])
         s.set("window_offset", [sp.value() for sp in self.off_spins])
-        # 开机自启已置灰（待开发）：**不要**用界面状态覆盖配置。
-        # isChecked() 读的是我们为了「回显原值」而设的那个值，若照写回去，
-        # 一个碰不到的控件就成了悄悄改配置的暗门。
-        # Launch-at-login is disabled (pending): do NOT write the widget state
-        # back.  It was pre-set only to echo the stored value, and writing it
-        # back would turn an unclickable widget into a hidden config edit.
-        if self._startup_editable:
-            s.set("start_with_windows", self.startup.isChecked())
+        # 1.0.6：开机自启真的会写回配置了（此前置灰，不写回）。
+        # Since 1.0.6 launch-at-login is written back for real.
+        s.set("start_with_windows", self.startup.isChecked())
+        s.set("hotkeys_enabled", self.hotkeys_enabled.isChecked())
         s.set("taskbar_panel", self.taskbar_panel.isChecked())
         s.set("summon_count", self.summon_count.value())
         s.set("spawn_spread", self.spread.isChecked())
@@ -745,10 +1027,18 @@ class SettingsWindow(QWidget):
                         or old_top != bool(s.get("always_on_top", True)))
         # 上限同步到表达式常量 / keep the maxCount constant in sync
         self.manager.constants["maxCount"] = float(s.get("max_count", 50))
+        want_startup = bool(s.get("start_with_windows", False))
         try:
-            self.manager.set_startup(bool(s.get("start_with_windows", False)))
-        except Exception:
-            pass
+            startup_ok = self.manager.set_startup(want_startup)
+        except Exception:  # noqa: BLE001 - 注册表写失败不该中断整个「应用」
+            startup_ok = False
+        # 只在「刚被勾上、却没写进注册表」时提醒。每次都提醒的话，用户一旦
+        # 遇到策略限制，每点一次应用就弹一次，很快就学会无视弹窗了。
+        # Warn only when the box was just ticked and the registry write failed.
+        # Warning every time would train the user to dismiss it.
+        if want_startup and not startup_ok and not old_startup:
+            QMessageBox.warning(self, self.t.t("settings.title"),
+                                self.t.t("msg.startup_failed"))
         self.manager.apply_settings(need_restart=need_restart)
 
         if old_lang != s.get("language"):

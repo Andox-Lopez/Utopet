@@ -51,11 +51,31 @@ JP_PARAM_NAMES = {
 class ActionInstance:
     """动作实例基类 / Base class of every action instance."""
 
-    def __init__(self, mascot, defn: ActionDef, params: dict, resolver):
+    #: 组合动作最多套几层。`leaf()` / `progress()` 沿 child 链往下走，
+    #: 这个上限只是防止配置里出现自引用时把遍历变成死循环。
+    #: How deep a composite chain may nest.  `leaf()` / `progress()` walk the
+    #: child chain and this only guards against a self-referencing config.
+    MAX_COMPOSITE_DEPTH = 32
+
+    def __init__(self, mascot, defn: ActionDef, params: dict, resolver,
+                 seek: int = 0, seek_index: int = 0):
         self.mascot = mascot
         self.defn = defn
         self.resolver = resolver
         self.time = 0
+        #: 会话恢复用的「续播」帧数：前 N 帧只补动画、不施加位移。
+        #: 见 `AnimateInstance.tick` 第 0 步。
+        #: Frame count to fast-forward on session restore: the first N ticks
+        #: advance the animation only and apply no movement.
+        try:
+            self.seek_left = max(0, int(seek or 0))
+        except (TypeError, ValueError):
+            self.seek_left = 0
+        #: 续播到组合动作的第几个子动作 / which child of a composite to resume at.
+        try:
+            self.seek_index = max(0, int(seek_index or 0))
+        except (TypeError, ValueError):
+            self.seek_index = 0
         self.locals: dict = {}
         #: 本次 tick 是否因「脱离边界」而结束 / set when this tick ended on LostGround.
         #: 由 Manager 读取并把行为切成「落下する」，见模块 docstring。
@@ -130,9 +150,86 @@ class ActionInstance:
         return bool(v)
 
     # ------------------------------------------------------------------
+    # 会话恢复：这套动作到底跑到哪儿了 / where is this action right now?
+    # ------------------------------------------------------------------
+    def leaf(self) -> "ActionInstance":
+        """
+        当前**真正在播**的那个最内层动作 / the innermost action actually playing.
+
+        必须往里钻一层的原因：组合动作（Sequence / Select）自己**从不**累加
+        `time` —— 只有真正逐帧播动画的 `AnimateInstance` 会。原版 Behavior.xml 里
+        绝大多数行为都是组合动作（「先走到那边 → 再坐下」），只看最外层的话
+        `time` 永远是 0，续播功能等于没有。
+        The reason for drilling down: composite actions never accumulate `time`
+        themselves, only the leaf `AnimateInstance` does — and almost every
+        behaviour in the original Behavior.xml is a composite.  Reading the
+        outermost instance therefore always yields 0.
+        """
+        node = self
+        for _ in range(self.MAX_COMPOSITE_DEPTH):
+            nxt = getattr(node, "child", None)
+            if nxt is None:
+                break
+            node = nxt
+        return node
+
+    def progress(self) -> tuple[int, int]:
+        """
+        `(子动作下标, 该子动作已跑帧数)` / `(child index, frames played in it)`.
+
+        存档就靠这两个数：光有帧数不够 —— 组合动作得知道该从**哪一个**子动作
+        接着放，否则「先走再坐」会从「先走」重新开始。
+        Both numbers are needed: the frame count alone would restart the whole
+        sequence at child 0.
+        """
+        node = self
+        index = 0
+        seen_index = False
+        for _ in range(self.MAX_COMPOSITE_DEPTH):
+            nxt = getattr(node, "child", None)
+            if nxt is None:
+                break
+            if not seen_index and hasattr(node, "index"):
+                # `_next_child` 先自增再返回，所以正在跑的是 index-1
+                # `_next_child` increments before returning, so the running
+                # child sits at index-1.
+                index = max(0, int(node.index) - 1)
+                seen_index = True
+            node = nxt
+        try:
+            elapsed = int(getattr(node, "time", 0) or 0)
+        except (TypeError, ValueError):
+            elapsed = 0
+        return index, max(0, elapsed)
+
+    # ------------------------------------------------------------------
     def tick(self) -> bool:
         """推进一帧；返回 False 表示动作结束 / Advance one tick; False = finished."""
         return False
+
+    def _make_child(self, item):
+        """
+        建一个子动作，并把**续播帧数交给第一个真正建出来的那个**。
+        Build a child action, handing the resume frame count to the first one
+        that actually gets created.
+
+        为什么要「传下去」而不是各层自己补：组合动作自己不播动画（`time` 永远
+        是 0），真正会消费 `seek_left` 的只有 `AnimateInstance`。所以这个帧数
+        必须一路下沉到叶子动作，中间每一层建完孩子就把自己那份清零。
+        Why hand it down: a composite does not play the animation itself, so
+        only the leaf consumes `seek_left`.  The count therefore has to sink to
+        the leaf, each level zeroing its own copy as it creates a child.
+        """
+        if isinstance(item, ActionRef):
+            inst = self.resolver(self.mascot, item.name, item.params)
+        elif isinstance(item, ActionDef):
+            inst = self.resolver(self.mascot, None, {}, item)
+        else:
+            return None
+        if inst is not None and self.seek_left:
+            inst.seek_left = self.seek_left
+            self.seek_left = 0
+        return inst
 
     # 便捷方法 / convenience helpers -------------------------------------
     def _scale(self):
@@ -260,11 +357,49 @@ class AnimateInstance(ActionInstance):
             return env.wall(self.mascot.look_right)
         return None
 
+    def _seek_pose(self, ns) -> None:
+        """
+        只推进一步动画，**不施加位移** / Advance the animation one frame, no movement.
+
+        会话恢复时把动画补到存档那一帧用的。位移必须不重放 —— 宠物已经站在
+        存档位置上了，再走一遍的表现就是「重启后瞬移」。
+        Used on session restore to bring the animation up to the saved frame.
+        Movement must not be replayed: the mascot already stands where it was
+        saved, and walking it again looks exactly like a teleport on start-up.
+        """
+        self.anim = self._pick_animation()
+        poses = self.anim.poses if self.anim is not None else []
+        if not poses:
+            return
+        pose = poses[min(self.pose_index, len(poses) - 1)]
+        dur = int(pose.duration.num(ns, 1))
+        self.pose_time += 1
+        if self.pose_time >= max(1, dur):
+            self.pose_time = 0
+            self.pose_index = (self.pose_index + 1) % len(poses)
+        pose = poses[min(self.pose_index, len(poses) - 1)]
+        name = pose.image.get(ns)
+        if not isinstance(name, str):
+            name = pose.image.text()
+        base = pose.base.pair(ns, (64.0, 128.0))
+        self.mascot.set_image(name, base)
+        self.mascot.reposition()
+
     def tick(self) -> bool:
         self.time += 1
         m = self.mascot
         ns = self.ns()
         dest_x, dest_y = self._destinations()
+
+        # 0) 会话恢复续播：只补动画帧，位移一步都不走。
+        #    On session restore, fast-forward the animation only; not one step
+        #    of movement is replayed.
+        if self.seek_left > 0:
+            self.seek_left -= 1
+            if self.duration is not None and self.time > self.duration:
+                return False
+            self._seek_pose(ns)
+            return True
 
         # 1) 吸附到锚框；脱离则抛 LostGround / snap onto the frame; LostGround if it lets go
         border = self.border
@@ -366,7 +501,9 @@ class SequenceInstance(ActionInstance):
 
     def init(self):
         super().init()
-        self.index = 0
+        # 会话恢复：从存档里的那个子动作接着放，而不是从头再来。
+        # Session restore: resume at the saved child instead of from the start.
+        self.index = self.seek_index
         self.child = None
 
     def _next_child(self):
@@ -374,16 +511,9 @@ class SequenceInstance(ActionInstance):
         while self.index < len(children):
             item = children[self.index]
             self.index += 1
-            inst = self._make(item)
+            inst = self._make_child(item)
             if inst is not None:
                 return inst
-        return None
-
-    def _make(self, item):
-        if isinstance(item, ActionRef):
-            return self.resolver(self.mascot, item.name, item.params)
-        if isinstance(item, ActionDef):
-            return self.resolver(self.mascot, None, {}, item)
         return None
 
     def tick(self) -> bool:
@@ -415,11 +545,7 @@ class SelectInstance(ActionInstance):
         self.child = None
 
     def _make(self, item):
-        if isinstance(item, ActionRef):
-            return self.resolver(self.mascot, item.name, item.params)
-        if isinstance(item, ActionDef):
-            return self.resolver(self.mascot, None, {}, item)
-        return None
+        return self._make_child(item)
 
     def tick(self) -> bool:
         if self.child is None:
@@ -484,10 +610,22 @@ def _builtin_classes() -> dict[str, type]:
     return _BUILTIN_CACHE
 
 
-def create_action(mascot, name, params=None, defn=None) -> ActionInstance | None:
+def create_action(mascot, name, params=None, defn=None,
+                  seek: int = 0, seek_index: int = 0) -> ActionInstance | None:
     """
     创建一个动作实例。
     Create an action instance.
+
+    `seek` / `seek_index` 只给「会话恢复」用：让动作从第 N 帧的动画状态接着播，
+    而不重放前面那 N 帧的位移（宠物已经站在存档位置上了，再放一遍就是瞬移）。
+    `seek_index` 是组合动作里「从第几个子动作接着放」的下标。
+    两者都会**沿 child 链一路下沉到真正播动画的那个叶子动作**（见
+    `ActionInstance._make_child`）—— 组合动作自己不播动画，帧数停在它身上没用。
+    `seek` exists solely for session restore: continue from the Nth animation
+    frame without replaying the Nth movement steps, which would teleport a
+    mascot already standing at its saved position.  Both values sink down the
+    child chain to the leaf that actually plays the animation — a composite
+    does not animate, so a frame count left on one does nothing.
 
     `name` 为 None 时直接使用 `defn`（内联动作）。
     When *name* is None, *defn* (an inline action) is used directly.
@@ -517,11 +655,11 @@ def create_action(mascot, name, params=None, defn=None) -> ActionInstance | None
     if kind == "builtin":
         cls = _builtin_classes().get(defn.builtin or "")
         if cls is not None:
-            return cls(mascot, defn, params, resolver)
+            return cls(mascot, defn, params, resolver, seek, seek_index)
         # 未知内建类：退化成一次性动作 / unknown built-in: degrade to a no-op
-        return InstantInstance(mascot, defn, params, resolver)
+        return InstantInstance(mascot, defn, params, resolver, seek, seek_index)
     if kind in ("composite",):
-        return SequenceInstance(mascot, defn, params, resolver)
+        return SequenceInstance(mascot, defn, params, resolver, seek, seek_index)
     if kind == "select":
-        return SelectInstance(mascot, defn, params, resolver)
-    return AnimateInstance(mascot, defn, params, resolver)
+        return SelectInstance(mascot, defn, params, resolver, seek, seek_index)
+    return AnimateInstance(mascot, defn, params, resolver, seek, seek_index)

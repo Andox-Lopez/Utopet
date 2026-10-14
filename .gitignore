@@ -39,7 +39,7 @@ env/
 *.tmp
 *.bak
 *~
-analysis/_*
+analysis/*
 install.log
 utopet_setup_debug.log
 
@@ -63,7 +63,6 @@ $RECYCLE.BIN/
 # GitLens 缓存
 .gitlens/
 #角色缓存
-characters/花卷/
-characters/ayaka/
+characters/*
 #非开发内容
 docs/*

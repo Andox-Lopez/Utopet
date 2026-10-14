@@ -604,9 +604,18 @@ class ThrowIE(_Animated):
         a = env.window_by_hwnd(hwnd)
         if a is None or not a.visible:
             return
+        # ⚠️ `Area` 没有 __iter__，只能按字段取。这里曾写成四元解包 ——
+        # 必然抛 TypeError，而下面的 try/except 把它整个吞掉，于是这个
+        # 「窗口被扔出屏幕后夹回来」的功能从 1.0.2 起就一直静默失效，
+        # 直到 1.0.6 写回归测试时才暴露（测试自己也在犯同一个错）。
+        # `Area` is not iterable.  The old four-way unpack always raised
+        # TypeError, and the bare except below swallowed it, so this whole
+        # feature had been silently dead since 1.0.2.
         try:
-            left, top, right, bottom = env.work_area
-        except Exception:
+            wa = env.work_area
+            left, top = wa.left, wa.top
+            right, bottom = wa.right, wa.bottom
+        except AttributeError:
             return
         # 已经完全在工作区内就不动它 —— 用户可能故意把窗口扔到某个角落。
         # Leave it alone when it is already fully inside: the user may have

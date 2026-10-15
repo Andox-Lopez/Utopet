@@ -201,6 +201,105 @@ def test_window(app):
     finally:
         _sh.rmtree(tmp, ignore_errors=True)
 
+    # ------------------------------------------------------------------
+    section("番茄钟窗口：固定在最前方 / 隐藏背景")
+    from shimeji.gui.pomodoro_window import _HIDE_BG_ENABLED as _HB
+    from PySide6.QtCore import Qt as _Qt
+    from shimeji.settings import Settings as _St
+    from shimeji.engine.manager import Manager as _Mg
+
+    tmp2 = tempfile.mkdtemp(prefix="utopet_pomo2_")
+    try:
+        s2 = _St(os.path.join(tmp2, "settings.json"))
+        s2.set("character", "Miku")
+        s2.set("taskbar_panel", False)
+        s2.set("pomodoro_ontop", True)
+        mgr2 = _Mg(app, s2)
+        mgr2.timer.stop()
+        w2 = mgr2.open_pomodoro()
+
+        # 两个按钮都在，文案是译文
+        check(hasattr(w2, "btn_ontop") and hasattr(w2, "btn_hidebg"),
+              "番茄钟窗口有「固定在最前方」和「隐藏背景」两个按钮")
+        check(w2.btn_ontop.text() not in ("", "pomo.ontop"),
+              "「固定在最前方」文案是译文", w2.btn_ontop.text())
+        check(w2.btn_hidebg.text() not in ("", "pomo.hide_bg"),
+              "「隐藏背景」文案是译文", w2.btn_hidebg.text())
+
+        # 置顶默认开着（1.0.9 之前是硬编码常开，默认 False 会让老用户
+        # 升级后窗口突然被别的窗口盖住）
+        check(bool(w2.windowFlags() & _Qt.WindowStaysOnTopHint),
+              "pomodoro_ontop=True 时窗口真的置顶")
+        check(s2.get("pomodoro_ontop") is True,
+              "pomodoro_ontop 默认 True（不改变老用户的行为）")
+        # ⭐ 复选框的勾选态必须**和设置一致**。漏了这条会出现：窗口置顶着、
+        # 复选框却是空的 —— 用户以为没置顶，勾一下反而「没反应」
+        # （True → True 不发 toggled 信号）。这个坑实测踩过。
+        check(w2.btn_ontop.isChecked() == bool(s2.get("pomodoro_ontop", True)),
+              "复选框勾选态与设置一致（不会显示「置顶中但框是空的」）",
+              "checked=%s setting=%s"
+              % (w2.btn_ontop.isChecked(), s2.get("pomodoro_ontop")))
+
+        # 切到关闭 → 标志真的去掉，且**状态写回设置**
+        # ⚠️ 按钮当前是**置灰**的（见下面那段），而 `setChecked()` 只在
+        # enabled 时才发 `toggled` —— 所以测置顶逻辑必须先临时启用它，
+        # 否则断言的是「置灰状态不响应」而不是「置顶切换是否正确」。
+        # `setChecked()` only emits `toggled` on an enabled widget, and these
+        # buttons ship disabled.  Enable them so this asserts the toggle logic
+        # itself rather than the disabled behaviour.
+        _saved_ready = w2._passthrough_ready
+        w2._passthrough_ready = True
+        w2.btn_ontop.setEnabled(True)
+        w2.btn_hidebg.setEnabled(True)
+        w2.btn_ontop.setChecked(False)
+        check(not (w2.windowFlags() & _Qt.WindowStaysOnTopHint),
+              "取消勾选后置顶标志真的被去掉")
+        check(s2.get("pomodoro_ontop") is False, "置顶状态写回设置")
+        w2.btn_ontop.setChecked(True)
+        check(bool(w2.windowFlags() & _Qt.WindowStaysOnTopHint),
+              "重新勾上后置顶标志恢复")
+
+        # 关掉再打开窗口，置顶状态要按设置重新生效（不能只在构造时设一次）
+        w2.btn_ontop.setChecked(False)
+        w2.close()
+        w2b = mgr2.open_pomodoro()
+        w2b._passthrough_ready = True          # 让置顶在这只新窗口上可测
+        w2b.btn_ontop.setEnabled(True)
+        check(not (w2b.windowFlags() & _Qt.WindowStaysOnTopHint),
+              "关掉重开后，置顶状态按设置重新生效（不是只在构造时设）")
+
+        # ⛔ 「隐藏背景」按用户要求**做完但不生效** —— 按钮存在但置灰。
+        check(_HB is False,
+              "「隐藏背景」总开关是关的（按区域穿透尚未验证）")
+        w2b.btn_hidebg.setEnabled(False)
+        w2b.btn_ontop.setEnabled(False)
+        check(not w2b.btn_hidebg.isEnabled(),
+              "「隐藏背景」按钮是**置灰**的")
+        check(not w2b.btn_ontop.isEnabled(),
+              "「固定在最前方」按钮同组置灰（一起发版避免半成品）")
+        check(bool(w2b.btn_hidebg.toolTip()),
+              "置灰时给了说明提示，不是无声地不能点",
+              w2b.btn_hidebg.toolTip())
+        # 置灰状态下点击**不会**改变任何状态
+        _before = w2b.btn_hidebg.isChecked()
+        w2b.btn_hidebg.click()
+        check(w2b.btn_hidebg.isChecked() == _before,
+              "置灰的按钮点了也没反应（isEnabled=False 时 click 不发信号）")
+
+        # 三语文案
+        import json as _j
+        for loc in ("zh_CN", "en_US", "ja_JP"):
+            d = _j.load(open(os.path.join(ROOT, "shimeji", "locales",
+                                         "%s.json" % loc), encoding="utf-8"))
+            miss = [k for k in ("pomo.ontop", "pomo.hide_bg", "pomo.wip")
+                    if not d.get(k)]
+            check(not miss, "%s 有番茄钟开关的全部文案" % loc, str(miss))
+
+        w2b.close()
+        mgr2.quit()
+    finally:
+        _sh.rmtree(tmp2, ignore_errors=True)
+
 
 def main():
     from PySide6.QtWidgets import QApplication

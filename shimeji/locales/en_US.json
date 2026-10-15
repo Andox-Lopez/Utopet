@@ -237,5 +237,8 @@
   "lbl.avoid_input": "Move pets away while you type",
   "lbl.avoid_margin": "Zone size",
   "lbl.avoid_typing": "Stop avoiding after",
-  "hint.avoid_input": "A pet sitting on your input box or IME candidate window gets in the way, so it moves aside while it detects you typing.\nNote: modern apps (browsers, VS Code, ...) do not tell outside programs where the input box is, so this actually avoids the area *around the cursor*; it is off if your input box is elsewhere.\nOnly pets already inside the zone are moved; they are otherwise left alone."
+  "hint.avoid_input": "A pet sitting on your input box or IME candidate window gets in the way, so it moves aside while it detects you typing.\nNote: modern apps (browsers, VS Code, ...) do not tell outside programs where the input box is, so this actually avoids the area *around the cursor*; it is off if your input box is elsewhere.\nOnly pets already inside the zone are moved; they are otherwise left alone.",
+  "pomo.ontop": "Always on top",
+  "pomo.hide_bg": "Hide background",
+  "pomo.wip": "This feature is still in development and not available yet"
 }

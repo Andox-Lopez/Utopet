@@ -20,13 +20,21 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCursor, QFont
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel,
                                QProgressBar, QPushButton, QVBoxLayout,
                                QWidget)
 
 from ..i18n import get_i18n
 from ..icons import app_icon
 from ..pomodoro import Pomodoro
+
+#: 「隐藏背景」的总开关。**现在是 False** —— 按区域鼠标穿透要靠
+#: `nativeEvent` 处理 `WM_NCHITTEST`，这条路径还没在本机验证过；先把按钮做出来
+#: 并置灰，等真跑通了再翻成 True。
+#: Master switch for "hide background".  Off for now: per-region pass-through
+#: needs `nativeEvent`/`WM_NCHITTEST`, which is not yet verified on this machine.
+#: The buttons exist and are disabled until that path is proven.
+_HIDE_BG_ENABLED = False
 
 #: 状态 → 三语文案键 / phase -> i18n key
 _PHASE_KEY = {
@@ -142,6 +150,19 @@ class PomodoroWindow(QWidget):
         opt_row = QHBoxLayout()
         opt_row.setSpacing(6)
         self.btn_ontop = QCheckBox()
+        # ⭐ **建按钮时就要把勾选状态设成设置值**。设成 True 会发一次
+        # `toggled` → 槽里又会去读设置并重设标志 —— 那是多余的副作用，
+        # 所以先连信号、设值，再断开。
+        # ⚠️ 更要紧的是**漏了这行**的后果：QCheckBox 默认 unchecked，而设置
+        # 默认 True，于是窗口置顶但复选框是空的 —— 用户以为没置顶，勾一下
+        # 反而「没反应」（True→True 不发信号）。这个坑是实测抓出来的。
+        # Set the checked state from settings.  Missing this shows a window
+        # that *is* on top with an empty box; ticking it then looks like a
+        # no-op because True -> True emits nothing.
+        self.btn_ontop.blockSignals(True)
+        self.btn_ontop.setChecked(
+            bool(manager.settings.get("pomodoro_ontop", True)))
+        self.btn_ontop.blockSignals(False)
         self.btn_ontop.toggled.connect(self._on_ontop_toggled)
         self.btn_hidebg = QCheckBox()
         self.btn_hidebg.toggled.connect(self._on_hidebg_toggled)
@@ -162,8 +183,13 @@ class PomodoroWindow(QWidget):
         self.btn_ontop.setEnabled(self._passthrough_ready)
         self.btn_hidebg.setEnabled(self._passthrough_ready)
         if not self._passthrough_ready:
-            self.btn_ontop.setToolTip(t.t("pomo.wip"))
-            self.btn_hidebg.setToolTip(t.t("pomo.wip"))
+            # ⚠️ 用 `self.t`，不是裸 `t` —— `__init__` 里没有裸名 `t`，
+            # 写成裸名会在构造时抛 NameError（项目铁律：Qt 槽里用裸名会静默
+            # 吞掉整个槽函数）。
+            # `self.t`, never a bare `t`: there is no bare `t` here, and a bare
+            # one raises NameError mid-constructor.
+            self.btn_ontop.setToolTip(self.t.t("pomo.wip"))
+            self.btn_hidebg.setToolTip(self.t.t("pomo.wip"))
 
         self.hint_label = QLabel()
         self.hint_label.setWordWrap(True)
@@ -209,6 +235,8 @@ class PomodoroWindow(QWidget):
         self.btn_toggle.setText(t.t("pomo.start"))
         self.btn_skip.setText(t.t("pomo.skip"))
         self.btn_reset.setText(t.t("pomo.reset"))
+        self.btn_ontop.setText(t.t("pomo.ontop"))
+        self.btn_hidebg.setText(t.t("pomo.hide_bg"))
         self.hint_label.setText(t.t("pomo.hint"))
         self._render()
 
@@ -216,6 +244,107 @@ class PomodoroWindow(QWidget):
         """语言切换后刷新 / Refresh after a language switch."""
         self.t = get_i18n()
         self._refresh_texts()
+        if not self._passthrough_ready:
+            self.btn_ontop.setToolTip(self.t.t("pomo.wip"))
+            self.btn_hidebg.setToolTip(self.t.t("pomo.wip"))
+
+    # ------------------------------------------------------------------
+    # 窗口外观开关 / window appearance switches (1.0.11)
+    # ------------------------------------------------------------------
+    def _apply_ontop_flag(self):
+        """按设置里的 `pomodoro_ontop` 设置置顶标志。
+
+        ⚠️ **改窗口标志后必须重新 show()**：Qt 只在窗口显示时把标志位写进
+        真实的 HWND，改了不重新显示的话用户看不出任何变化（而 `show()` 会让
+        窗口重新出现在前面，所以要记住它之前是不是可见的）。
+        Changing window flags only affects the live HWND while the window is
+        shown, so it has to be shown again — but remember whether it was
+        visible so an invisible window stays invisible.
+        """
+        want = bool(self.manager.settings.get("pomodoro_ontop", True))
+        flags = self.windowFlags()
+        has = bool(flags & Qt.WindowStaysOnTopHint)
+        if want == has:
+            return
+        if want:
+            self.setWindowFlags(flags | Qt.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(flags & ~Qt.WindowStaysOnTopHint)
+        was_visible = self.isVisible()
+        if was_visible:
+            self.show()
+            self.raise_()
+
+    def _on_ontop_toggled(self, checked: bool):
+        """置顶开关 / Always-on-top toggle."""
+        s = self.manager.settings
+        s.set("pomodoro_ontop", bool(checked))
+        # 直接按开关值设标志；「设置」页改动后重开窗口也会走同一条路径。
+        self._apply_ontop_flag()
+
+    def _on_hidebg_toggled(self, checked: bool):
+        """隐藏背景开关 / Hide-background toggle.
+
+        ⛔ 暂未接通：按区域穿透依赖 `WM_NCHITTEST`，本机尚未验证。
+        ⛔ Not wired up yet: per-region pass-through needs `WM_NCHITTEST`,
+        unverified on this machine.  `_HIDE_BG_ENABLED` keeps the button off.
+        """
+        if not self._passthrough_ready:
+            # 防御：真被点到了（开关翻成 True 但穿透没跑通）就弹回去，别留一个
+            # 什么都不干的勾。
+            self.btn_hidebg.blockSignals(True)
+            self.btn_hidebg.setChecked(False)
+            self.btn_hidebg.blockSignals(False)
+            return
+        self._apply_mouse_passthrough(bool(checked))
+
+    def _apply_mouse_passthrough(self, on: bool):
+        """隐藏背景：只留倒计时与那颗按钮，其余区域鼠标穿透。
+
+        激活时：
+          - 去掉标题栏（`FramelessWindowHint`）—— Qt 只提供整窗级别的
+            `WA_TransparentForMouseEvents`，一设整窗连那颗按钮一起穿透，
+            所以「按区域穿透」必须走 `WM_NCHITTEST`：命中不在按钮上就返回
+            `HTTRANSPARENT`，让 Windows 把这个点交给下面的窗口。
+          - 隐藏标题栏 + 进度条 + 番茄数 + 今日统计 + 提示 + 三个计时按钮，
+            只保留倒计时数字与那颗「隐藏背景」按钮（用户需要能点回来）。
+          - **倒计时数字区域也穿透**：它是信息展示，不该挡住用户点下面的东西。
+
+        ⛔ 当前 `_HIDE_BG_ENABLED = False`，所以这段代码**不会被执行** ——
+        按区域穿透在本机尚未验证（见 `nativeEvent` 处的说明）。按钮是置灰的。
+        Only the countdown and the restore button survive; everything else is
+        hidden, and the frameless flag drops the title bar.
+        """
+        if not on:
+            return
+        # 无边框（去掉标题栏）/ frameless: no title bar
+        if not (self.windowFlags() & Qt.FramelessWindowHint):
+            was_visible = self.isVisible()
+            self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+            if was_visible:
+                self.show()
+        # 只留倒计时与恢复按钮 / keep only the countdown and the restore button
+        for w in (self.state_label, self.bar, self.count_label,
+                  self.stats_label, self.hint_label,
+                  self.btn_toggle, self.btn_skip, self.btn_reset,
+                  self.btn_ontop):
+            w.setVisible(False)
+        self.btn_hidebg.setVisible(True)
+        # 数字那一块不接收鼠标 / the digits themselves take no clicks
+        self.time_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.adjustSize()
+
+    def _restore_full_panel(self):
+        """退出「隐藏背景」，恢复完整面板。/ Leave hide-background mode."""
+        self.setWindowFlags(self.windowFlags() & ~Qt.FramelessWindowHint)
+        for w in (self.state_label, self.bar, self.count_label,
+                  self.stats_label, self.hint_label,
+                  self.btn_toggle, self.btn_skip, self.btn_reset,
+                  self.btn_ontop, self.btn_hidebg):
+            w.setVisible(True)
+        self.time_label.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.adjustSize()
+        self.show()
 
     # ------------------------------------------------------------------
     def _on_tick(self):

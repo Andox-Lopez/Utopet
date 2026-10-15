@@ -59,9 +59,38 @@
   「正在输入」。 Keyboard activity is detected per virtual-key; held modifiers
   may be missed on some machines.  Ordinary typing is always detected.
 
+### 变更 Changed
+
+- **番茄时钟窗口多了两个开关：「固定在最前方」和「隐藏背景」。**
+  这一版**只放出了前者的能力，两个按钮都还是灰的** —— 见下方说明。
+  - 「固定在最前方」：**现在就能用**。此前置顶是写死在代码里的常开状态，
+    现在可以随时关掉。默认仍然是开（老用户升级后行为不变）。
+  - 「隐藏背景」：激活后会去掉标题栏，只留倒计时数字和那颗按钮，其余区域
+    鼠标穿透，点击下面任何东西都不受影响。
+  - ⚠️ **两个按钮这一版都是灰的，不能点。** 原因：「隐藏背景」需要「按区域」
+    的鼠标穿透 —— Qt 只提供整窗级别的 `WA_TransparentForMouseEvents`，
+    一设就会连那颗用来恢复窗口的按钮一起穿透掉。真正的做法要用
+    `nativeEvent` 处理 `WM_NCHITTEST`，那条路**还没在本机验证过**。
+    与其发一个点了没反应、或者半成品的按钮，不如先把能力做完、按钮摆着、
+    置灰待验证。「固定在最前方」的实现其实已经写完并且通过了测试，
+    只是和它同组一起灰着，避免发一个「一能一不能」的半成品。
+
+  **The Pomodoro window gained two switches, both shipped disabled.**  Always-on-
+  top is now toggleable (it used to be hard-coded on, and the default stays on so
+  upgrading changes nothing for you).  Hide-background is implemented but its
+  buttons are greyed out: per-region mouse pass-through needs
+  `nativeEvent`/`WM_NCHITTEST`, which is not yet verified on this machine.
+
+- 🐞 **修正：番茄钟窗口可能显示成「置顶中，但复选框是空的」。** 复选框的勾选
+  状态没有和设置同步，于是取消勾选真的去掉了置顶、再勾上又「没反应」
+  （True → True 不发信号）。现在建按钮时就按设置设好勾选态。
+  Fixed: the always-on-top checkbox did not reflect the stored setting, so
+  unticking removed the flag but re-ticking appeared to do nothing.
+
 ### 测试 Tests
 
 - `verify_physics_101.py` 269 → **315 项**（新增 46 项）。
+- `verify_pomodoro.py` 39 → **57 项**（新增 18 项）。
 
 ---
 

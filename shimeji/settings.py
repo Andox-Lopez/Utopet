@@ -157,6 +157,16 @@ DEFAULTS = {
     "pomodoro_long_break_min": 15,    # 长休息 / long break
     "pomodoro_long_every": 4,         # 每几轮一次长休息 / long break every N
     "pomodoro_pet_react": True,       # 阶段切换时宠物做个动作 / pet reacts
+    # 番茄钟窗口「固定在最前方」。默认 True —— 1.0.9 之前它是硬编码常开的，
+    # 默认 False 会让老用户升级后窗口突然被别的窗口盖住。
+    # Always-on-top for the Pomodoro window.  True by default: before 1.0.11 it
+    # was hard-coded on, so False would make the window vanish under others.
+    "pomodoro_ontop": True,
+    # 「隐藏背景」故意**没有**设置项：那条按区域鼠标穿透的路还没验证，
+    # 默认关闭、按钮置灰（见 gui/pomodoro_window.py 的 _HIDE_BG_ENABLED）。
+    # Deliberately has no setting yet: the per-region pass-through is
+    # unverified, so the button ships disabled.
+    "pomodoro_hide_bg": False,
     # 任务栏常驻控制面板：一个普通窗口，可在任务栏固定
     # Always-on taskbar control panel: a normal window that can be pinned
     "taskbar_panel": True,

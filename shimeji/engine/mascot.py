@@ -202,6 +202,15 @@ class Mascot(QWidget):
         self.resume_seek: int = 0
         self.resume_index: int = 0
 
+        #: 1.0.9：下一次挑行为时**忽略「次の行動リスト」约束**，强制走全局池。
+        #: 只给「鼠标静止聚集」的自动散开用：原版那条链是封闭的，不明确放出来
+        #: 宠物会一直坐在那儿看鼠标。用掉一次就由 Manager 清掉。
+        #: 1.0.9: ignore the "next behaviour list" for the next pick and go
+        #: straight to the global pool.  Only used when releasing the pets from
+        #: the closed "gather around the cursor" chain; Manager clears it once
+        #: it has been consumed.
+        self.release_next_list: bool = False
+
         flags = Qt.FramelessWindowHint | Qt.Tool | Qt.NoDropShadowWindowHint
         if always_on_top:
             flags |= Qt.WindowStaysOnTopHint

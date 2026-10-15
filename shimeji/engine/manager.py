@@ -48,6 +48,20 @@ BEHAVIOR_GATHER = "マウスの周りに集まる"
 #: At 25 fps that is ~13 minutes; anything longer is not "what it was doing" but
 #: a background loop, and re-syncing it is pointless.
 _MAX_RESUME_SEEK = 20000
+#: 1.0.9：行为失配时给「随机挑到的动作」加的最大跳帧数（约 0.5 秒 @25fps）。
+#: 目的只是**把同时恢复的几只岔开**（否则它们会同手同脚地从第 0 帧起步），
+#: 所以刻意取得很小：跳帧期间动画会原地播放、不产生位移，跳太多就会看出
+#: 「宠物先呆站着半秒再走」。
+#: 1.0.9: max random skip applied to a randomly picked action when the saved
+#: behaviour is missing (~0.5 s at 25 fps).  It exists only to de-synchronise
+#: several pets restored at once; during a skip the animation plays in place
+#: without moving, so a large value would read as "the pet stands still first".
+_RESUME_JITTER_FRAMES = 12
+#: 聚到鼠标旁之后，至少停够这么多秒才允许「鼠标一动就散开」。
+#: 没有这个宽限期的话，光标抖一下就会把刚出发的队伍解散。
+#: Minimum time the pets must stay gathered before a cursor movement releases
+#: them; without it a one-pixel jitter would dismiss the group instantly.
+_GATHER_MIN_HOLD_SEC = 3
 #: 日志 / logger
 log = logging.getLogger("shimeji")
 
@@ -157,8 +171,22 @@ class Manager(QObject):
         self.brain = Brain(self)
         self.hidden = False
         self._idle_ticks = 0
-        self._idle_fired = False
         self._last_cursor = (0, 0)
+        #: 这一轮「光标静止」是否已经召过宠物了。
+        #: 不能拿 `_gather_active`(下面的) 兼任：超时散开之后宠物已经不在
+        #: 聚集链里了，但光标还是没动，必须**继续记着「召过了」**，否则下一帧
+        #: 就会再召一次，变成「聚了散、散了聚」的死循环。
+        #: Whether this idle period has already fired a gather.  It cannot be
+        #: folded into `_gather_active` below: after a timeout release the pets
+        #: are out of the chain while the cursor is still idle, and if we forgot
+        #: that, the very next tick would gather them again — forever.
+        self._idle_fired = False
+        #: 1.0.9：宠物当前是否正被「聚到鼠标旁」那条封闭链攥着，以及已经攥了
+        #: 多少 tick。用来判断什么时候该把它们放出来（见 `_check_idle`）。
+        #: 1.0.9: whether the pets are currently held by the closed "gather
+        #: around the cursor" chain, and for how many ticks.
+        self._gather_active = False
+        self._gather_hold = 0
         self._settings_window = None
         self._panel = None
         self._panel_enabled = bool(settings.get("taskbar_panel", True))
@@ -472,6 +500,27 @@ class Manager(QObject):
     # ------------------------------------------------------------------
     # 生命周期 / lifecycle
     # ------------------------------------------------------------------
+    def _clamp_restore_pos(self, x: float, y: float) -> Pt:
+        """
+        把会话里记下的位置夹回**当前**的屏幕 / Clamp a restored position into the current screens.
+
+        存档可能是「插着第二块显示器时」写下来的。显示器拔掉、分辨率改小或
+        投影切走之后，那个坐标已经在屏幕外 —— 宠物会先出现在看不见的地方，
+        再被 `_rescue_if_offscreen` 从屏幕上方扔回来（用户看到的是「宠物凭空
+        从天上掉下来」）。先夹一次，比让它掉一次干净。
+
+        The snapshot may have been written while a second monitor was attached.
+        After unplugging it (or shrinking the resolution) that coordinate is off
+        screen: the mascot would appear out of sight and then be dropped back in
+        from above.  Clamping first is tidier than letting it fall.
+        """
+        for mon, _wa in self.shared_env.monitors:
+            if mon.contains_x(x, 0) and mon.contains_y(y, 0):
+                return Pt(x, y)
+        wa = self.shared_env.work_area_at(x, y)
+        return Pt(min(max(x, wa.left), wa.right),
+                  min(max(y, wa.top), wa.bottom))
+
     def start(self):
         self._apply_env_options()
         ms = int(self.settings.get("tick_ms", 40))
@@ -489,12 +538,16 @@ class Manager(QObject):
                     lr = bool(item.get("look_right", False))
                 except (TypeError, ValueError):
                     continue
+                # 显示器拔掉/换分辨率之后，存档坐标可能已经在屏幕外；
+                # 夹回来，否则宠物会先在看不见的地方出现再从天上掉下来。
+                # The saved coordinate may be off screen after a monitor change.
+                pos = self._clamp_restore_pos(x, y)
                 # 多角色模式要按快照里记的角色恢复，否则所有宠物都会变成默认角色
                 # In multi-character mode restore each mascot's own character,
                 # otherwise they would all come back as the default one.
                 lb = item.get("character") if isinstance(item, dict) else None
                 behavior = item.get("behavior") if isinstance(item, dict) else None
-                m = self.summon(Pt(x, y), look_right=lr, label=lb,
+                m = self.summon(pos, look_right=lr, label=lb,
                                 behavior=behavior)
                 if m is not None:
                     restored += 1
@@ -775,21 +828,22 @@ class Manager(QObject):
             name = self.brain.choose(m)
             if not name:
                 return
-            # 会话恢复：**只对同一个行为**续播。存档里的行为在当前角色的表里
-            # 不存在时，行为选择会退回到正常随机，这时给别的动作补帧就是白跳。
-            # Session restore resumes only the *same* behaviour.  If the saved one
-            # is missing from this character's table the normal random pick takes
-            # over, and fast-forwarding some other action would skip frames for
-            # no reason.
-            hit = name == m.resume_behavior
-            seek = m.resume_seek if hit else 0
-            index = m.resume_index if hit else 0
+            # 「忽略后续列表」的标记被这一次挑选用掉了（见 `_release_gather`）。
+            # The "ignore the next list" flag is consumed by this pick.
+            m.release_next_list = False
+            # 会话恢复：行为名一致就原样续播；对不上时改为给新挑到的动作加
+            # 一小段随机跳帧，见 `_resume_frames`。
+            # Session restore: an exact name match resumes as before; on a
+            # mismatch the newly picked action gets a small random skip instead.
+            seek, index, jitter = self._resume_frames(m, name)
             m.resume_behavior = None
             m.resume_seek = 0
             m.resume_index = 0
             m.action = create_action(m, name, {}, None, seek, index)
             if m.action is None:
                 return
+            if jitter:
+                m.action.seek_left = jitter
             # 原版的「セリフ」行为：行为一被选中就冒泡。放在这里而不是
             # Brain 里，是因为只有 Manager 知道「这是**刚选中**的行为」，
             # 续播恢复的那一下不该跟着冒泡。
@@ -809,6 +863,32 @@ class Manager(QObject):
                 return
             m.action = None
         self._rescue_if_offscreen(m)
+
+    def _resume_frames(self, m: Mascot, name: str) -> tuple[int, int, int]:
+        """
+        这次要给动作补多少帧 / How many frames to fast-forward this action.
+
+        返回 `(帧数, 子动作下标, 需要追加的随机跳帧)`。
+
+        * **行为名对得上** —— 原样续播（帧数 + 跑到第几个子动作）。
+        * **对不上**（换了角色，或那个动作被停用了）—— 动作只能重新挑，但
+          **不能让每一只都从第 0 帧起步**：同时恢复的好几只宠物会同手同脚地
+          播同一个动画，一眼就看得出「程序刚启动」。给一小段随机跳帧岔开它们。
+
+        位置在两条路径上都已经恢复过了（`start()` 把存档的锚点交给 `summon`），
+        这里补的是「看起来还在做刚才那件事」。
+
+        Returns `(frames, child index, extra random skip)`.  An exact name match
+        resumes as before; a mismatch cannot resume the behaviour (it is gone
+        from this character's table), so instead of having every pet start at
+        frame 0 in lockstep it gets a small random skip.  The position is
+        restored on both paths by `start()`; this only fixes how it *looks*.
+        """
+        if name == m.resume_behavior:
+            return m.resume_seek, m.resume_index, 0
+        if not m.resume_behavior:
+            return 0, 0, 0
+        return 0, 0, random.randint(1, _RESUME_JITTER_FRAMES)
 
     def _rescue_if_offscreen(self, m: Mascot):
         """
@@ -843,21 +923,93 @@ class Manager(QObject):
         self._force_behavior(m, BEHAVIOR_FALL, interrupt=True)
 
     def _check_idle(self):
-        """鼠标静止一段时间后让宠物聚过来 / Gather mascots around an idle cursor."""
+        """鼠标静止一段时间后让宠物聚过来 / Gather mascots around an idle cursor.
+
+        **1.0.9 起还必须能把它们放出来。** 原版 Behavior.xml 里
+        「マウスの周りに集まる」的后续行为列表是封闭的（只指向它自己那一串），
+        一旦进入，宠物就永远坐在那里看鼠标 —— 用户回来动鼠标它也不走。
+        这正是这项功能从 1.0.0 起就默认关闭的原因，也是它作为「已知限制」
+        挂在 README 里的原因。现在补两条退出条件：
+
+        1. 聚集之后鼠标动了（且已经聚够 `_GATHER_MIN_HOLD_SEC` 秒）→ 放出；
+        2. 鼠标一直不动、超过 `idle_gather_max_sec` 秒 → 也把它们放回去。
+
+        「放出」= 清空 `previous_behavior` 并标记下次挑行为时忽略后续列表约束
+        （见 `Brain._next_pool`）—— 只清空不够，下一个行为的列表可能又是封闭的。
+
+        1.0.9 has to *release* them too.  The original
+        "マウスの周りに集まる" chain is closed (it only points at itself), so a
+        pet that entered it sits watching the cursor forever — even after the
+        user comes back and moves the mouse.  That is why this feature shipped
+        disabled and why it sat in the README as a known limitation.  There are
+        now two ways out: a cursor movement after a short grace period, and the
+        `idle_gather_max_sec` time limit.
+        """
         if not self.settings.get("idle_gather", True):
             return
+        tick_ms = max(10, int(self.settings.get("tick_ms", 40)))
+        if self._gather_active:
+            # 计时必须**先于**光标判定：否则用户一直在轻轻抖鼠标时，
+            # `_gather_hold` 永远长不大，超时那条路就永远走不到。
+            # Count before looking at the cursor: otherwise a user who keeps
+            # nudging the mouse would keep the hold counter at zero forever and
+            # the timeout could never fire.
+            self._gather_hold += 1
         cur = (self.shared_env.cursor.x, self.shared_env.cursor.y)
         if cur != self._last_cursor:
             self._last_cursor = cur
             self._idle_ticks = 0
+            # 光标动了 = 重新武装：等它再次静止下来还能聚一轮。
+            # A cursor movement re-arms the next idle period.
             self._idle_fired = False
+            if self._gather_active and (
+                    self._gather_hold * tick_ms >= _GATHER_MIN_HOLD_SEC * 1000):
+                self._release_gather()
             return
         self._idle_ticks += 1
-        need = int(self.settings.get("idle_gather_sec", 25)) * 1000 // max(10, int(
-            self.settings.get("tick_ms", 40)))
+        if self._gather_active:
+            limit = int(self.settings.get("idle_gather_max_sec", 60)) * 1000 // tick_ms
+            if limit > 0 and self._gather_hold >= limit:
+                # 超时了：放它们回去正常活动，但**不重新武装** —— 光标本来就
+                # 一直没动，没有必要每隔一分钟再把它们叫过来一次。
+                # Timed out: release them, but do not re-arm — the cursor has
+                # not moved, so there is no reason to call them over again.
+                self._release_gather(rearm=False)
+            return
+        need = int(self.settings.get("idle_gather_sec", 25)) * 1000 // tick_ms
         if not self._idle_fired and self._idle_ticks >= need:
             self._idle_fired = True
+            self._gather_active = True
+            self._gather_hold = 0
+            log.info("idle-gather: cursor idle, gathering mascots")
             self.force_behavior_all(BEHAVIOR_GATHER)
+
+    def _release_gather(self, rearm: bool = True):
+        """
+        把宠物从「聚到鼠标旁」那条封闭链里放出来 / Release the gathered pets.
+
+        `rearm=True`（鼠标动了）：清掉静止计数，光标再静止下来还能再聚一次。
+        `rearm=False`（超时）：光标没动，不该再聚一轮。
+        `rearm=True` means the cursor moved: reset the idle counter so the pets
+        may gather again later.  `rearm=False` is the timeout path.
+        """
+        if not self._gather_active:
+            return
+        self._gather_active = False
+        self._gather_hold = 0
+        if rearm:
+            self._idle_ticks = 0
+            self._idle_fired = False
+        for m in self.mascots:
+            # 还没轮到执行的「聚过来」一起撤掉，不然排着队的那只会照旧过去。
+            # Drop a still-queued gather, or a pet that has not started it yet
+            # would walk over there anyway.
+            m.pending_behaviors = [b for b in m.pending_behaviors
+                                   if b != BEHAVIOR_GATHER]
+            m.previous_behavior = None
+            m.release_next_list = True
+        log.info("idle-gather: released (%s)",
+                 "cursor moved" if rearm else "timeout")
 
     # ------------------------------------------------------------------
     # 行为队列 / behaviour queue

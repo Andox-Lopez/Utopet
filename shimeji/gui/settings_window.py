@@ -492,6 +492,18 @@ class SettingsWindow(QWidget):
         self.throw.setChecked(bool(self.settings.get("throw_enabled", True)))
         g.layout().addRow("", self.throw)
 
+        # 「为什么宠物不爬我这个窗口」以前只能靠猜：铺满工作区的窗口（最大化、
+        # 全屏、贴屏视频）被刻意排除在窗口交互之外，否则它的下边和屏幕地面
+        # 完全重合，宠物站在地上就会一直触发「沿窗口下边爬行」。1.0.9 起把它
+        # 写在这里说明白，别让用户以为坏了。
+        # "Why won't the pet climb my window?" used to be a guessing game: a
+        # work-area-filling window is deliberately excluded, because its bottom
+        # edge sits exactly on the screen floor and the pet would endlessly
+        # trigger "crawl along the window's bottom edge".  1.0.9 spells it out.
+        hint_ie = QLabel(t.t("hint.window_maximized"))
+        hint_ie.setWordWrap(True)
+        g.layout().addRow(hint_ie)
+
         self.idle = QCheckBox(t.t("lbl.idle_gather"))
         self.idle.setChecked(bool(self.settings.get("idle_gather", True)))
         g.layout().addRow("", self.idle)
@@ -500,6 +512,22 @@ class SettingsWindow(QWidget):
         self.idle_spin.setRange(3, 600)
         self.idle_spin.setValue(int(self.settings.get("idle_gather_sec", 25)))
         g.layout().addRow(t.t("lbl.idle_sec"), self.idle_spin)
+
+        # 聚集之后最多待多久。原版那条链是封闭的，1.0.9 之前宠物进去就不出来
+        # （用户回来动鼠标也不走），这是这项功能一直默认关闭的原因。
+        # 1.0.9 会主动放它们出来，所以这里的 0 表示「只靠鼠标移动来散开」。
+        # How long they may stay gathered.  Before 1.0.9 the closed chain kept
+        # them there forever, which is why the feature shipped disabled; 0 here
+        # means "only a cursor movement releases them".
+        self.idle_max_spin = QSpinBox()
+        self.idle_max_spin.setRange(0, 3600)
+        self.idle_max_spin.setValue(int(self.settings.get("idle_gather_max_sec", 60)))
+        self.idle_max_spin.setSpecialValueText(t.t("lbl.idle_max_never"))
+        g.layout().addRow(t.t("lbl.idle_max_sec"), self.idle_max_spin)
+
+        hint_idle = QLabel(t.t("hint.idle_gather"))
+        hint_idle.setWordWrap(True)
+        g.layout().addRow(hint_idle)
         v.addWidget(g)
 
         # 逐条微调行为频次 / tune each behaviour individually
@@ -1292,6 +1320,7 @@ class SettingsWindow(QWidget):
               self.climb.isChecked() and self.throw.isChecked())
         s.set("idle_gather", self.idle.isChecked())
         s.set("idle_gather_sec", self.idle_spin.value())
+        s.set("idle_gather_max_sec", self.idle_max_spin.value())
         s.set("titles", [x.strip() for x in self.titles_edit.toPlainText().splitlines()
                          if x.strip()])
         s.set("window_offset", [sp.value() for sp in self.off_spins])

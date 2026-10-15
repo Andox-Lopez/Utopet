@@ -228,5 +228,9 @@
   "hint.library": "\"Disable\" only hides it from the pickers; the files stay and you can enable it again at any time. Use it for packs under Program Files that cannot be removed without elevation.",
   "msg.delete_char_confirm": "Delete the character \"{0}\"? Its images and configuration files are removed permanently.",
   "msg.delete_char_denied": "Not allowed to delete (the program usually lives under Program Files). Delete this folder manually, or run the app as administrator and try again:/n{0}",
-  "msg.delete_char_failed": "Could not delete \"{0}\": {1}"
+  "msg.delete_char_failed": "Could not delete \"{0}\": {1}",
+  "lbl.idle_max_sec": "Max gather time (seconds)",
+  "lbl.idle_max_never": "never auto-release",
+  "hint.idle_gather": "Gathered pets are released automatically: a cursor movement dismisses them (after at least 3 seconds), and leaving the cursor still past the value above releases them too. In the original configuration the chain that follows \"gather around the cursor\" is closed, so older versions never let them out again -- which is why this feature shipped disabled.",
+  "hint.window_maximized": "Maximised / full-screen windows take no part in window interaction: their bottom edge coincides with the screen floor, so a pet standing on the ground would endlessly trigger \"crawl along the window's bottom edge\". Ordinary windowed windows are unaffected."
 }

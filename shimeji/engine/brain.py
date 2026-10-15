@@ -147,6 +147,17 @@ class Brain:
 
     def _next_pool(self, mascot, ns):
         prev = mascot.previous_behavior
+        # 被明确「放出来」时忽略「次の行動リスト」约束（1.0.9）。
+        # 只把 `previous_behavior` 清空是不够的：下一个行为的后续列表**可能又是
+        # 封闭的**，于是宠物只是从一条封闭链换到另一条。强制走一次全局池，
+        # 才能保证真的回到正常随机。触发点是「鼠标静止聚集」的自动散开
+        # （见 `Manager._release_gather`）。
+        # An explicit release ignores the "next behaviour list" (1.0.9).  Simply
+        # clearing `previous_behavior` is not enough: the next behaviour's list
+        # may itself be closed, so the pet would merely hop to another closed
+        # chain.  Forcing one global pick guarantees a real return to normal.
+        if getattr(mascot, "release_next_list", False):
+            return None
         if prev is None or prev.next_list is None:
             return None
         pool = []

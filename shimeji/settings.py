@@ -105,11 +105,23 @@ DEFAULTS = {
     "spawn_spread": True,
     # 鼠标静止时聚集；默认关闭 —— 原版 Behavior.xml 里「マウスの周りに集まる」
     # 的后续行为列表是封闭的，一旦进入宠物会一直坐着看鼠标，观感偏呆。
+    # 1.0.9 起引擎会主动把宠物从那条链里放出来（见 `Manager._check_idle`），
+    # 所以现在打开它是安全的；默认值仍然保持关闭，不替老用户改主意。
     # Gather around an idle cursor; off by default because the original
-    # "マウスの周りに集まる" chain is封闭 (self-contained) and the pet would just sit
-    # and stare at the cursor forever.
+    # "マウスの周りに集まる" chain is self-contained and the pet would just sit and
+    # stare at the cursor forever.  Since 1.0.9 the engine releases the pet from
+    # that chain by itself (see `Manager._check_idle`), so turning it on is safe;
+    # the default stays off rather than changing an old user's mind for them.
     "idle_gather": False,
     "idle_gather_sec": 25,            # 静止判定秒数 / idle threshold in seconds
+    # 聚集之后最多待多久（秒）。0 = 只靠「鼠标动了」来散开。
+    # 原版那条链是封闭的：不主动放出来的话，宠物会一直坐在那儿看鼠标 ——
+    # 用户回来动鼠标它也不走。这是「鼠标静止聚集」一直默认关闭的原因。
+    # How long the pets may stay gathered (seconds).  0 = only a cursor movement
+    # releases them.  The original chain is closed: without an explicit release
+    # the pet sits there watching the cursor forever, even after the user comes
+    # back — the very reason this feature shipped disabled.
+    "idle_gather_max_sec": 60,
     # 窗口 / windows
     "titles": [],                     # 窗口标题过滤 / window title filter
     "window_offset": [0, 0, 0, 0],    # X / Y / 宽 / 高 偏移 / rect offsets

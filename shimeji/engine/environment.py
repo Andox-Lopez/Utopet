@@ -19,10 +19,16 @@ floor / wall / ceiling borders with their `isOn` test.
 
 from __future__ import annotations
 
+import logging
+
 from .. import win32
 
 __all__ = ["Pt", "Area", "Wall", "FloorCeiling", "NotOnBorder", "NOT_ON_BORDER",
            "Location", "Environment", "MascotEnvironment"]
+
+#: 日志 / logger。走和 Manager 同一个 logger，写进 data\shimeji.log。
+#: Same logger as the Manager, so it lands in data\shimeji.log.
+log = logging.getLogger("shimeji")
 
 # 边界容差（像素）/ Border tolerance in pixels —— 与原版一致 / same as the original
 BORDER_TOLERANCE = 2
@@ -376,6 +382,13 @@ class Environment:
         l, t, r, b = win32.get_work_area()
         self.work_area = Area(l, t, r, b, True)
         self.active_ie = Area(0, 0, 0, 0, False)
+        #: 1.0.9：光标下**被跳过的**那个铺满窗口的标题（诊断用）。
+        #: 用户问「为什么宠物不爬我这个窗口」时，日志里能看到就是它。
+        #: 1.0.9: title of the work-area-filling window that was skipped under
+        #: the cursor — so "why won't the pet climb this window?" has an answer
+        #: in the log instead of being a mystery.
+        self.blocked_ie_title = ""
+        self._blocked_ie_prev = None
         self.cursor = Location()
         self.windows: list[Area] = []
         self.monitors: list[tuple[Area, Area]] = []   # (整屏, 工作区) / (full, work)
@@ -556,25 +569,43 @@ class Environment:
         「IEの下辺を伝う」「IEの天井を歩く」这类爬行 —— 表现为
         「全屏窗口会触发一个窗口底部爬行的动画」。
 
-        跳过之后继续往下找，找到光标下第一个**可用**的窗口；都没有才置为不可见。
-
         **Full-screen windows are skipped.**  A maximised window sits under the
         cursor at all times, so `activeIE` would always be it, and its bottom
         edge coincides with the work-area bottom — making
         `activeIE.bottomBorder.isOn(anchor)` permanently true and firing the
         "crawl along the window bottom" behaviour over and over.
+
+        1.0.9：跳过之后**不再往下找**。以前会继续枚举到后面那个被铺满窗口
+        完全盖住的窗口，于是宠物会在一条**看不见的边**上爬（用户看到的是
+        「宠物在半空中凭空做出爬窗动作」）。铺满窗口之下没有「光标所在的
+        可见窗口」，这时正确的答案是**没有** activeIE。
+
+        1.0.9: no longer falls through to the windows *behind* it.  It used to
+        keep enumerating and pick a window that the full-screen one completely
+        covers, so the mascot climbed an **invisible edge** — reported as "the
+        pet does climbing animations in mid-air".  There is no visible window
+        under the cursor in that case, so the honest answer is *no* activeIE.
         """
         # EnumWindows 按 Z 序自上而下枚举，第一个命中的就是最上层窗口
         # EnumWindows walks top-to-bottom in Z order, so the first hit is topmost.
         best = None
+        blocked = None
         for a in self.windows:
             if a.left <= cx <= a.right and a.top <= cy <= a.bottom:
                 # 铺满工作区的窗口不是可交互的「窗口」/ a work-area-filling
                 # window is not an interactable window
                 if self.is_fullscreen_window(a):
-                    continue
-                best = a
+                    blocked = a
+                else:
+                    best = a
                 break
+        title = self._titles.get(blocked.hwnd, "") if blocked is not None else ""
+        self.blocked_ie_title = title
+        if title != self._blocked_ie_prev:
+            self._blocked_ie_prev = title
+            if title:
+                log.info("activeIE 跳过铺满窗口 %r（最大化/全屏窗口不参与窗口交互）",
+                         title)
         if best is None:
             self.active_ie.visible = False
             self.active_ie.set_rect(-9999, -9999, -9999, -9999)

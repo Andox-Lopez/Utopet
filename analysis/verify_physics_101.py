@@ -20,8 +20,9 @@ sys.path.insert(0, ROOT)
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from shimeji.engine.environment import NOT_ON_BORDER, Area, Pt  # noqa: E402
-from shimeji.engine.manager import (BEHAVIOR_FALL, BEHAVIOR_GATHER,  # noqa: E402
-                                   BEHAVIOR_THROWN, Manager)
+from shimeji.engine.manager import (  # noqa: E402
+    BEHAVIOR_FALL, BEHAVIOR_GATHER, BEHAVIOR_THROWN,
+    _GATHER_MIN_HOLD_SEC, _RESUME_JITTER_FRAMES, Manager)
 from shimeji.settings import Settings  # noqa: E402
 
 FAILS: list[str] = []
@@ -1729,14 +1730,17 @@ def main() -> int:
         check(_p12.resume_behavior is None and _p12.resume_seek == 0,
               "续播标记用掉后立刻清空（不会粘到下一个动作上）")
 
-        # 未命中：存档里的行为不存在 → 走正常随机，不补帧、也不残留标记
+        # 未命中：存档里的行为不存在 → 走正常随机。1.0.9 起**不再**把存档里的
+        # 帧数照搬过来（那是「白跳别人的帧」），但会给一个很小的随机跳帧，
+        # 免得同时恢复的好几只同手同脚地从第 0 帧起步。
         _p13 = _m12.summon(Pt(_wa12.left + 500, _wa12.bottom), behavior="座る")
         _p13.resume_behavior = "不存在的行為"
         _p13.resume_seek = 40
         _m12._tick_mascot(_p13)
-        check(getattr(_p13.action, "seek_left", 0) == 0,
-              "行为名对不上时不补帧（否则会白跳掉别的动作的帧）",
-              str(getattr(_p13.action, "seek_left", None)))
+        _jit = getattr(_p13.action, "seek_left", 0)
+        check(0 < _jit <= _RESUME_JITTER_FRAMES,
+              "行为名对不上时不照搬存档帧数，只加一小段随机跳帧",
+              "seek_left=%s（存档是 40，上限 %d）" % (_jit, _RESUME_JITTER_FRAMES))
         check(_p13.resume_behavior is None and _p13.resume_seek == 0,
               "对不上时标记同样被清空，不会一直挂着")
         _m12.quit()
@@ -1889,6 +1893,231 @@ def main() -> int:
         _m15.quit()
     finally:
         _shutil.rmtree(_d15, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    section("1.0.9 鼠标静止聚集：进得去，也出得来")
+    # 原版 Behavior.xml 里「マウスの周りに集まる」之后的「次の行動リスト」是
+    # 封闭的：宠物一旦进去就一直坐着看鼠标，用户回来动鼠标它也不走。这是这项
+    # 功能从 1.0.0 起就默认关闭的原因，也是 README 里挂着的「已知限制」。
+    # 1.0.9 补两条退出路径：①鼠标动了（聚够宽限期之后）②一直不动就超时。
+    _d16 = _tempfile.mkdtemp(prefix="utopet_gather_")
+    try:
+        _s16 = _S3(os.path.join(_d16, "settings.json"))
+        _s16.set("character", "Miku")
+        _s16.set("taskbar_panel", False)
+        _s16.set("restore_session", False)
+        _s16.set("idle_gather", True)
+        _s16.set("idle_gather_sec", 1)
+        _s16.set("idle_gather_max_sec", 4)
+        _s16.set("tick_ms", 40)
+        _m16 = Manager(app, _s16)
+        _m16.timer.stop()
+        _m16.dismiss_all()
+        _wa16 = _m16.shared_env.work_area
+        _p16 = _m16.summon(Pt(_wa16.left + 300, _wa16.bottom))
+        check(_p16 is not None, "聚集：先召唤一只")
+
+        def _idle16(n, move_to=None):
+            """喂 n 帧「光标状态」/ Feed n ticks of cursor state."""
+            if move_to is not None:
+                _m16.shared_env.cursor.set(move_to[0], move_to[1])
+            for _ in range(n):
+                _m16._check_idle()
+
+        _m16.shared_env.cursor.set(600, 400)
+        _m16._last_cursor = (600, 400)
+        _m16._idle_ticks = 0
+        _m16._idle_fired = False
+        _idle16(40)
+        check(_m16._gather_active, "光标静止够久 → 进入聚集状态")
+        check(BEHAVIOR_GATHER in _p16.pending_behaviors,
+              "「聚到鼠标旁」被下达给宠物", str(_p16.pending_behaviors))
+
+        # 宽限期：刚聚上就抖一下鼠标，不该立刻解散（不然根本聚不起来）
+        _idle16(1, move_to=(601, 401))
+        check(_m16._gather_active,
+              "刚聚上时抖一下鼠标不会立刻解散（%.0f 秒宽限期）"
+              % _GATHER_MIN_HOLD_SEC)
+
+        # 撑过宽限期再把鼠标移开 → 放出
+        _idle16(int(_GATHER_MIN_HOLD_SEC * 1000 // 40) + 2)
+        check(_m16._gather_active, "宽限期内宠物仍然聚着")
+        _idle16(1, move_to=(900, 500))
+        check(not _m16._gather_active, "鼠标移动后宠物被放出来")
+        check(_p16.release_next_list,
+              "释放时打了「忽略后续列表」标记（只清 previous 不够）")
+        check(_p16.previous_behavior is None, "释放时清掉了「上一个行为」约束")
+        check(BEHAVIOR_GATHER not in _p16.pending_behaviors,
+              "还排在队里的「聚过来」被一起撤掉")
+
+        # 标记被用掉一次就该失效，否则宠物会永远忽略行为链
+        _p16.pending_behaviors = []
+        _p16.forced_behavior = None
+        _m16._tick_mascot(_p16)
+        check(_p16.release_next_list is False,
+              "「忽略后续列表」只用一次，挑完行为立刻失效")
+
+        # 超时路径：光标一直不动，超过 idle_gather_max_sec 秒也要散开
+        _m16.shared_env.cursor.set(900, 500)
+        _m16._last_cursor = (900, 500)
+        _m16._idle_ticks = 0
+        _m16._idle_fired = False
+        _idle16(40)
+        check(_m16._gather_active, "重新静止后可以再聚一次")
+        _idle16(200)
+        check(not _m16._gather_active, "光标一直不动也会超时散开")
+        # 关键：散开之后**不能**马上又聚一次，否则就成了「聚了散、散了聚」死循环
+        _idle16(20)
+        check(not _m16._gather_active,
+              "超时散开后不会立刻再聚（光标没动 = 这一轮已经聚过了）")
+
+        # 关掉开关就什么都不做
+        _m16.settings.set("idle_gather", False)
+        _m16._gather_active = False
+        _m16._idle_fired = False
+        _m16._idle_ticks = 0
+        _idle16(80)
+        check(not _m16._gather_active, "关掉「鼠标静止时聚集」后完全不动作")
+        _m16.quit()
+    finally:
+        _shutil.rmtree(_d16, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    section("1.0.9 铺满窗口挡住时，不再退到它身后的窗口")
+    # 光标下最上层就是一块铺满工作区的窗口 → 正确的答案是「没有可交互窗口」。
+    # 以前会继续往下枚举，挑到一个被它完全盖住的窗口，于是宠物在一条**看不见
+    # 的边**上爬（用户看到的是「宠物在半空中凭空做出爬窗动作」）。
+    _env17 = mgr.shared_env
+    _w17 = list(_env17.windows)
+    _map17 = dict(_env17._window_map)
+    _titles17 = dict(_env17._titles)
+
+    def _set_windows17(rects):
+        _env17.windows = []
+        _env17._window_map = {}
+        for _i, _r in enumerate(rects):
+            _a17 = Area(*_r, hwnd=997000 + _i)
+            _env17.windows.append(_a17)
+            _env17._window_map[_a17.hwnd] = _a17
+            _env17._titles[_a17.hwnd] = "Fake-%d" % _i
+
+    try:
+        # 上层铺满工作区，下层一个普通窗口，两个都盖住 (500, 400)
+        _set_windows17([(0, 0, 1920, 1032), (300, 300, 900, 800)])
+        _env17._update_active_ie(500, 400)
+        check(not _env17.activeIE.visible,
+              "最上层是铺满窗口时 activeIE 不可见（不再挑它身后的窗口）",
+              "hwnd=%s" % getattr(_env17.activeIE, "hwnd", None))
+        check(_env17.blocked_ie_title == "Fake-0",
+              "被跳过的铺满窗口记在 blocked_ie_title 里（排查用）",
+              repr(_env17.blocked_ie_title))
+
+        # 没有铺满窗口挡着时，普通窗口照常可交互（没误伤爬窗）
+        _set_windows17([(300, 300, 900, 800)])
+        _env17._update_active_ie(500, 400)
+        check(_env17.activeIE.visible and _env17.activeIE.hwnd == 997000,
+              "没有铺满窗口时普通窗口仍然可交互",
+              "%s / %s" % (_env17.activeIE.visible, _env17.activeIE.hwnd))
+        check(_env17.blocked_ie_title == "",
+              "没有跳过任何窗口时 blocked_ie_title 清空")
+
+        # 只有铺满窗口时同样算「被挡住」，并把名字记下来
+        _set_windows17([(0, 0, 1920, 1032)])
+        _env17._update_active_ie(960, 500)
+        check(not _env17.activeIE.visible, "只有铺满窗口时 activeIE 不可见")
+        check(_env17.blocked_ie_title == "Fake-0", "此时也记下了它的名字")
+    finally:
+        _env17.windows = _w17
+        _env17._window_map = _map17
+        _env17._titles = _titles17
+
+    # ------------------------------------------------------------------
+    section("1.0.9 会话恢复：屏幕外的存档位置会被夹回来")
+    # 存档可能是插着第二块显示器时写下来的。拔掉之后那个坐标已经在屏幕外，
+    # 宠物会先出现在看不见的地方，再被「掉出屏幕」那条兜底规则从天上扔回来。
+    _wa18 = mgr.shared_env.work_area
+    _far18 = mgr._clamp_restore_pos(_wa18.right + 9000, _wa18.bottom + 9000)
+    _in18 = any(_mon.contains_x(_far18.x, 0) and _mon.contains_y(_far18.y, 0)
+                for _mon, _w in mgr.shared_env.monitors)
+    check(_in18, "屏幕外的存档坐标被夹回屏幕内",
+          "(%.0f,%.0f)" % (_far18.x, _far18.y))
+    _near18 = mgr._clamp_restore_pos(_wa18.left + 300, _wa18.bottom - 10)
+    check(abs(_near18.x - (_wa18.left + 300)) < 0.01
+          and abs(_near18.y - (_wa18.bottom - 10)) < 0.01,
+          "本来就在屏幕内的坐标原样保留（不乱动用户的位置）",
+          "(%.0f,%.0f)" % (_near18.x, _near18.y))
+
+    _d18 = _tempfile.mkdtemp(prefix="utopet_clamp_")
+    try:
+        _s18 = _S3(os.path.join(_d18, "settings.json"))
+        _s18.set("character", "Miku")
+        _s18.set("taskbar_panel", False)
+        _s18.set("restore_session", True)
+        _s18.set("initial_count", 1)
+        _s18.set("session", [{"x": _wa18.right + 9000, "y": _wa18.bottom + 9000,
+                              "look_right": True, "character": "Miku"}])
+        _m18 = Manager(app, _s18)
+        _m18.timer.stop()
+        check(len(_m18.mascots) == 1, "屏幕外的快照也能恢复出宠物",
+              str(len(_m18.mascots)))
+        if _m18.mascots:
+            _pp18 = _m18.mascots[0]
+            _ok18 = any(_mon.contains_x(_pp18.anchor.x, 0)
+                        and _mon.contains_y(_pp18.anchor.y, 0)
+                        for _mon, _w in _m18.shared_env.monitors)
+            check(_ok18, "恢复出来的宠物落在屏幕内（不会先掉一次）",
+                  "(%.0f,%.0f)" % (_pp18.anchor.x, _pp18.anchor.y))
+        _m18.quit()
+    finally:
+        _shutil.rmtree(_d18, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    section("1.0.9 新增设置项与三语文案")
+    import json as _json9
+    for _loc9 in ("zh_CN", "en_US", "ja_JP"):
+        _lp9 = os.path.join(ROOT, "shimeji", "locales", "%s.json" % _loc9)
+        _ld9 = _json9.load(open(_lp9, encoding="utf-8"))
+        _miss9 = [k for k in ("lbl.idle_max_sec", "lbl.idle_max_never",
+                              "hint.idle_gather", "hint.window_maximized")
+                  if not _ld9.get(k)]
+        check(not _miss9, "%s 有 1.0.9 的全部新文案" % _loc9, str(_miss9))
+
+    from shimeji.settings import DEFAULTS as _DEF9
+    check(_DEF9.get("idle_gather_max_sec") == 60,
+          "idle_gather_max_sec 默认 60 秒",
+          str(_DEF9.get("idle_gather_max_sec")))
+    check(_DEF9.get("idle_gather") is False,
+          "idle_gather 仍然默认关闭（不替老用户改主意）")
+
+    _d19 = _tempfile.mkdtemp(prefix="utopet_idlespin_")
+    try:
+        _s19 = _S3(os.path.join(_d19, "settings.json"))
+        _s19.set("character", "Miku")
+        _s19.set("taskbar_panel", False)
+        _s19.set("idle_gather_max_sec", 90)
+        _m19 = Manager(app, _s19)
+        _m19.timer.stop()
+        _w19 = SettingsWindow(_m19)
+        _w19.show()
+        app.processEvents()
+        check(_w19.idle_max_spin.value() == 90,
+              "设置窗口读到了 idle_gather_max_sec",
+              str(_w19.idle_max_spin.value()))
+        _titles19 = [_w19.tabs.tabText(i) for i in range(_w19.tabs.count())]
+        _bi19 = _titles19.index("行为") if "行为" in _titles19 else -1
+        _pg19 = _w19.tabs.widget(_bi19) if _bi19 >= 0 else None
+        check(_pg19 is not None and bool(_pg19.findChildren(type(_w19.idle_max_spin))),
+              "「最长聚集时间」在「行为」页上（新设置项先问用户会点哪个页签）")
+        _w19.idle_max_spin.setValue(30)
+        _w19.apply()
+        check(_m19.settings.get("idle_gather_max_sec") == 30,
+              "保存后写回配置",
+              str(_m19.settings.get("idle_gather_max_sec")))
+        _w19.close()
+        _m19._settings_window = None
+        _m19.quit()
+    finally:
+        _shutil.rmtree(_d19, ignore_errors=True)
 
     # ------------------------------------------------------------------
     section("1.0.6 安装向导必须保留「选择安装位置」页")

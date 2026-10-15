@@ -23,7 +23,7 @@
 
 #define AppName "Utopet 桌宠"
 #define AppNameEn "Utopet Desktop Pet"
-#define AppVersion "1.0.8"
+#define AppVersion "1.0.9"
 #define AppPublisher "Utopet"
 #define AppExeName "Utopet.exe"
 ; 与 1.0.x 保持同一个 GUID：这是同一个产品的升级，改 GUID 会让旧版变成
@@ -110,7 +110,7 @@ RestartApplications=no
 ; 而 AppVersion 可以是 1.0.7-2 —— 两者分开写，别共用同一个宏。
 ; VersionInfoVersion must be four numeric parts (Windows version resources
 ; reject "1.0.7-2"); AppVersion may carry the suffix.  Keep them separate.
-VersionInfoVersion=1.0.8.0
+VersionInfoVersion=1.0.9.0
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

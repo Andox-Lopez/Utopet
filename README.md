@@ -50,7 +50,7 @@ python tools\build_release.py
 :: 2) 再生成安装包（characters 只打包 Miku）/ then build the installer
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\Utopet.iss
 :: 产物 / output:
-output\Utopet-Setup-1.0.6.exe
+output\Utopet-Setup-<版本>.exe
 ```
 
 Inno Setup 6 编译出 **34 MB** 的安装包（免安装版是 117 MB，LZMA2 压掉了约 70%），
@@ -209,18 +209,29 @@ so any original character pack can be dropped into `characters\`.
 
 ## 已知限制 / Known limitations
 
-- 「マウスの周りに集まる」的后续行为列表在原版配置里是封闭的，进入后宠物会一直
-  坐着看鼠标，因此**鼠标空闲聚集默认关闭**，可在 设置 → 行为 里打开。
-  The "gather around cursor" chain is self-contained in the original
-  configuration, so idle-gather is **off by default** (Settings → Behaviour).
-- 窗口交互（扛/扔窗口）对最大化的窗口自动跳过。
-  Window interaction is skipped for maximised windows.
-- 会话恢复续播**只对同一个行为生效**：存档里的行为在当前角色的动作表里找不到时
-  （比如换了角色，或那个动作被停用了），按正常随机挑，不会给别的动作白跳帧。
-  Session-restore resume applies **only when the same behaviour is chosen**; if the
-  saved behaviour is absent from the current character's table (character switched,
-  action disabled) the normal random pick takes over instead of fast-forwarding an
-  unrelated action.
+- **鼠标空闲聚集默认关闭**（可在 设置 → 行为 里打开）。1.0.9 起它已经能正常
+  进出了：聚过去之后鼠标一动就散开，或者超过「最长聚集时间」自动散开。
+  默认关闭只是不想替老用户改主意。
+  **Idle-gather is off by default** (Settings → Behaviour).  Since 1.0.9 it
+  enters *and leaves* that chain properly, so the default is off purely to avoid
+  changing an existing user's behaviour behind their back.
+- **最大化 / 全屏 / 贴屏的窗口不参与窗口交互**（宠物不会去爬、扛、扔它们）。
+  这类窗口的下边和屏幕地面完全重合，一允许交互，宠物站在地上就会一直触发
+  「沿窗口下边爬行」。它们被跳过之后也**不会再退到身后那个被盖住的窗口**上去
+  （否则宠物会在一条看不见的边上做出爬窗动作）；被跳过的窗口名会写进
+  `data\shimeji.log`。
+  **Maximised / full-screen windows take no part in window interaction.**  Their
+  bottom edge coincides with the screen floor, so allowing it would fire "crawl
+  along the window's bottom edge" non-stop.  Pets no longer fall through to a
+  covered window behind them either; the skipped window's title goes to
+  `data\shimeji.log`.
+- 会话恢复**对同一个行为会精确续播**；存档里的行为在当前角色的动作表里找不到时
+  （换了角色，或那个动作被停用了），**位置照旧恢复**，动作重新挑，只加一小段
+  随机跳帧把同时恢复的几只岔开 —— 不再全部从第 0 帧起步，也不照搬存档帧数。
+  Session-restore resumes **exactly** when the same behaviour is chosen.  If the
+  saved behaviour is absent from the current character's table the **position is
+  still restored**, the action is re-picked, and only a small random skip is
+  applied so several pets restored at once do not play in lockstep.
 - 补帧上限 20000 帧（25 fps 下约 13 分钟）—— 更长的循环动作不值得在启动时
   逐帧补回来。 Resumption is clamped at 20 000 frames (~13 min at 25 fps).
 - 全局快捷键已于 1.0.7 移除（原因见 CHANGELOG：组合极易撞车、注册失败静默、

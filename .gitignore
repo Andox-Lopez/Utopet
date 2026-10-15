@@ -39,7 +39,7 @@ env/
 *.tmp
 *.bak
 *~
-analysis/*
+analysis/_*
 install.log
 utopet_setup_debug.log
 

@@ -103,6 +103,16 @@ class PomodoroWindow(QWidget):
         self.count_label.setStyleSheet("color: palette(mid); font-size: 12px;")
         v.addWidget(self.count_label)
 
+        # 今日统计。**每天都在变，所以每 tick 重算**，不做缓存 ——
+        # 缓存这个数字的收益是零，而「今天专注了多久」正是用户会反复看的。
+        # Today's totals.  Recomputed every tick rather than cached: caching a
+        # number that changes all day buys nothing, and it is the number people
+        # keep glancing at.
+        self.stats_label = QLabel()
+        self.stats_label.setAlignment(Qt.AlignCenter)
+        self.stats_label.setStyleSheet("color: palette(mid); font-size: 11px;")
+        v.addWidget(self.stats_label)
+
         v.addSpacing(2)
 
         # 按钮行 / buttons
@@ -209,6 +219,7 @@ class PomodoroWindow(QWidget):
         n = snap["completed"]
         self.count_label.setText(
             "🍅 × %d" % n if n else t.t("pomo.none_done"))
+        self._render_stats()
 
         # 按钮文案随状态换：同一个位置在「开始 / 暂停 / 继续」之间切换，
         # 比三颗按钮互相隐藏更不容易点错。
@@ -219,6 +230,24 @@ class PomodoroWindow(QWidget):
             self.btn_toggle.setText(t.t("pomo.pause"))
         else:
             self.btn_toggle.setText(t.t("pomo.start"))
+
+    def _render_stats(self):
+        """今日累计 / Today's totals."""
+        stats = getattr(self.manager, "pomostats", None)
+        if stats is None:
+            self.stats_label.setText("")
+            return
+        try:
+            today = stats.today_text()
+            streak = stats.streak()
+        except Exception:  # noqa: BLE001 - 统计出问题不该让窗口变空白
+            self.stats_label.setText("")
+            return
+        t = self.t
+        text = t.t("pomo.stats_today").format(today)
+        if streak >= 2:
+            text += " · " + t.t("pomo.streak").format(streak)
+        self.stats_label.setText(text)
 
     # ------------------------------------------------------------------
     def _on_event(self, event: str, pom: Pomodoro):

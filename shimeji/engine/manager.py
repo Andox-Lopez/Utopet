@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (QApplication, QMenu, QMessageBox,
 
 from .. import win32
 from ..pomodoro import Pomodoro
+from ..pomodoro_stats import PomodoroStats
+from ..serifu import Serifu
 from ..i18n import get_i18n
 from ..icons import app_icon, tray_icon
 from ..names import display_name
@@ -84,7 +86,8 @@ def _pomodoro_state_text(pom: Pomodoro) -> str:
     return "%s %s" % (clock, t.t(key))
 
 
-def list_characters(settings: Settings | None = None) -> list[tuple[str, str]]:
+def list_characters(settings: Settings | None = None,
+                   include_disabled: bool = False) -> list[tuple[str, str]]:
     """
     列出所有可用角色 / List every available character.
 
@@ -119,6 +122,18 @@ def list_characters(settings: Settings | None = None) -> list[tuple[str, str]]:
             seen_dirs.add(d)
             seen_labels.add(name)
             out.append((name, d))
+    # 停用的角色**从所有选择器里消失**（面板下拉、托盘子菜单、设置里的角色页），
+    # 但文件一个字节都不动 —— 装在 Program Files 下的角色目录普通用户根本删不动，
+    # 「停用」是唯一永远可用的手段。角色库管理页需要看到它们，所以那里传
+    # include_disabled=True。
+    # Disabled characters vanish from every picker, but nothing is deleted:
+    # a pack under Program Files cannot be removed without elevation, so
+    # "disable" is the only always-available lever.  The library page needs to
+    # see them, hence include_disabled.
+    if not include_disabled and settings is not None:
+        disabled = {str(x) for x in (settings.get("disabled_chars", []) or [])}
+        if disabled:
+            out = [(lb, p) for lb, p in out if lb not in disabled]
     return out
 
 
@@ -149,6 +164,12 @@ class Manager(QObject):
         self._panel_enabled = bool(settings.get("taskbar_panel", True))
         #: 番茄时钟窗口（非模态，这里持强引用防 GC）/ Pomodoro window.
         self._pomodoro_window = None
+        #: 气泡台词 / speech balloons. 台词库是无 Qt 的纯逻辑，气泡窗口在 gui。
+        self.serifu = Serifu(settings)
+        self._balloon = None            # 懒建 / created lazily
+        self._serifu_elapsed_ms = 0
+        #: 番茄钟统计 / Pomodoro statistics.
+        self.pomostats = PomodoroStats()
         #: 番茄时钟 / the Pomodoro timer. 逻辑在 shimeji.pomodoro，无 Qt。
         self.pomodoro = Pomodoro(
             work_min=int(settings.get("pomodoro_work_min", 25)),
@@ -678,6 +699,61 @@ class Manager(QObject):
             except Exception:  # 单只宠物出错不影响其它 / one pet must not kill the rest
                 log.exception("mascot tick error")
                 m.action = None
+        self._tick_balloon()
+
+    # ------------------------------------------------------------------
+    # 气泡台词 / speech balloons
+    # ------------------------------------------------------------------
+    def _balloon_window(self):
+        """懒建气泡窗口 / Create the balloon window lazily."""
+        if self._balloon is None:
+            from ..gui.balloon import Balloon
+            # **不给 parent**：气泡是顶层窗口（要做成自己独立的置顶窗口）。
+            # 防 GC 靠 Manager 持有这个引用 —— 面板也是同一个套路。
+            # No parent: the balloon is a top-level always-on-top window.  It
+            # stays alive because the Manager holds this reference, exactly as
+            # the panel does.
+            self._balloon = Balloon(self.serifu)
+        return self._balloon
+
+    def say(self, mascot=None, text: str | None = None):
+        """
+        让一只宠物说句话。`text` 不给就按该角色的台词库随机挑。
+        Make a mascot say something; without `text` a line is picked from that
+        character's phrase book.
+        """
+        if not self.serifu.enabled():
+            return False
+        if mascot is None:
+            mascot = self.mascots[0] if self.mascots else None
+        if mascot is None:
+            return False
+        if text is None:
+            text = self.serifu.pick(self.serifu.phrases_for(mascot.bundle))
+        if not text:
+            return False
+        return self._balloon_window().say(
+            text, mascot,
+            always_on_top=bool(self.settings.get("always_on_top", True)))
+
+    def _tick_balloon(self):
+        """
+        每帧：气泡粘着宠物 + 定时冒泡。
+
+        「粘着」不能省：宠物到处走，气泡留在原地看起来就是坏的。
+        The follow is not optional: the pet walks around, and a balloon left
+        behind reads as broken.
+        """
+        if self._balloon is None or not self._balloon.isVisible():
+            return
+        self._balloon.follow()
+        interval = self.serifu.interval_ms()
+        if interval <= 0:
+            return
+        self._serifu_elapsed_ms += int(self.settings.get("tick_ms", 40))
+        if self._serifu_elapsed_ms >= interval:
+            self._serifu_elapsed_ms = 0
+            self.say()
 
     def _tick_mascot(self, m: Mascot):
         """
@@ -714,6 +790,15 @@ class Manager(QObject):
             m.action = create_action(m, name, {}, None, seek, index)
             if m.action is None:
                 return
+            # 原版的「セリフ」行为：行为一被选中就冒泡。放在这里而不是
+            # Brain 里，是因为只有 Manager 知道「这是**刚选中**的行为」，
+            # 续播恢复的那一下不该跟着冒泡。
+            # The original "serifu" behaviour pops a balloon as soon as it is
+            # chosen.  This lives here rather than in the Brain because only the
+            # Manager knows the behaviour was *just* chosen -- a session-resume
+            # restore must not make the pet speak.
+            if self.serifu.is_trigger(name):
+                self.say(m)
         if not m.action.tick():
             # LostGround 优先于一切：宠物已经不在边界上了，必须先掉下去。
             # LostGround outranks everything: the mascot is off its border and
@@ -1276,7 +1361,7 @@ class Manager(QObject):
         return w
 
     def _on_pomodoro_event(self, event: str, pom: Pomodoro):
-        """阶段切换 → 托盘气泡 + 宠物反应 / A phase transition happened."""
+        """阶段切换 → 托盘气泡 + 宠物反应 + 统计 / A phase transition happened."""
         t = get_i18n()
         key = {"work_done": "pomo.msg.work_done",
                "break_done": "pomo.msg.break_done",
@@ -1293,6 +1378,26 @@ class Manager(QObject):
             if event == "work_done" and bool(
                     self.settings.get("pomodoro_pet_react", True)):
                 self._pomodoro_pet_react()
+                # 统计：记下这一段工作的时长，「今天专注了多久」才有依据。
+                # 记的是**配置里的标准时长**，不是实际跑了多久 ——
+                # 补帧/跳过都会让实际时间对不上，而用户记的是「我做了 25 分钟」。
+                # Record the configured work length, not the wall-clock time:
+                # skips and fast-forwards make the two diverge, and what the
+                # user remembers is "I worked for 25 minutes".
+                try:
+                    self.pomostats.record(
+                        focus_sec=int(self.settings.get("pomodoro_work_min", 25))
+                        * 60)
+                except Exception:  # noqa: BLE001 - 统计失败不该影响计时
+                    log.exception("recording pomodoro stats failed")
+        # 气泡台词：阶段切换时说一句，让计时与桌宠真正联动起来。
+        # A line on every transition, so the timer and the pet feel connected.
+        if bool(self.settings.get("serifu_enabled", True)):
+            say_key = {"work_done": "serifu.pomodoro_break",
+                       "break_done": "serifu.pomodoro_work",
+                       "long_break_done": "serifu.pomodoro_break"}.get(event)
+            if say_key:
+                self.say(text=t.t(say_key))
         # 托盘悬停提示跟着变 / keep the tray tooltip in sync
         try:
             self.tray.setToolTip("%s — %s" % (t.t("pomo.title"),

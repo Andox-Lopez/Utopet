@@ -115,6 +115,10 @@ DEFAULTS = {
     "window_offset": [0, 0, 0, 0],    # X / Y / 宽 / 高 偏移 / rect offsets
     # 系统 / system
     "start_with_windows": False,      # 开机自启 / launch at login
+    # 被用户停用的角色（只影响「能不能被选」，不删文件）
+    # Characters the user disabled: this only removes them from the pickers,
+    # nothing is deleted, so it works even on admin-protected directories.
+    "disabled_chars": [],
     # 番茄时钟 / Pomodoro timer
     "pomodoro_work_min": 25,          # 工作时长 / work length
     "pomodoro_break_min": 5,          # 短休息 / short break

@@ -16,7 +16,8 @@ import os
 import time
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
+                               QDoubleSpinBox, QFileDialog,
                                QFormLayout, QFrame, QGroupBox, QHBoxLayout,
                                QHeaderView, QInputDialog,
                                QLabel, QLineEdit,
@@ -42,7 +43,37 @@ __all__ = ["SettingsWindow"]
 
 
 class SettingsWindow(QWidget):
-    """设置主窗口 / The settings window."""
+    """设置主窗口 / The settings window.
+
+    ============================  新增设置项放哪一页  ============================
+    **不要默认塞进「高级」。** 每加一个设置项前按顺序问一遍：
+
+      1. 它属于「桌面上有谁 / 长什么样」吗？→ 角色页 / 外观页
+      2. 它决定宠物**做什么动作**吗？        → 行为页
+      3. 它是某个**独立玩法**自带的配置吗？  → **给它自己一页**
+         （台词、番茄钟各自成页就是这个理由）
+      4. 以上都不是                            → 高级页（维护、日志、开机自启这类
+         跟「宠物怎么动」无关的开关）
+
+    判据是「用户找它时会想点哪个页签」。一个和谁都不沾的玩法塞进「高级」，
+    结果就是那一页越滚越长、用户翻到最后也没看见。
+
+    每一页都必须用 :meth:`_page` 包成滚动区，别直接建裸布局。
+
+    ---------------------------- Where a new setting belongs ---------------------------
+    Do not default to dumping it into "Advanced".  Ask, in order:
+      1. Who is on screen / what does it look like?  -> Characters / Appearance
+      2. What the pets *do*?                        -> Behaviour
+      3. Does it belong to an independent feature?   -> **give it its own page**
+         (Serifu and the Pomodoro timer both got one for this reason)
+      4. None of the above                           -> Advanced (maintenance, log,
+         launch at login -- switches unrelated to pet behaviour)
+
+    The test is "which tab would the user open to find it".  A feature that
+    relates to nothing in particular ends up buried at the bottom of a page
+    nobody scrolls to.  Every page must be built through :meth:`_page` so it
+    scrolls.
+    """
 
     def __init__(self, manager):
         super().__init__()
@@ -53,7 +84,7 @@ class SettingsWindow(QWidget):
 
         self.setWindowTitle(self.t.t("settings.title"))
         self.setWindowIcon(app_icon())
-        self.resize(760, 600)
+        self._fit_to_screen()
         # 接受拖放：把角色包 zip 或角色文件夹直接拖进来就导入。
         # 这是「导入角色包」最自然的入口 —— 用户手上就是那个文件，
         # 拖一下比「点按钮 → 在对话框里一路点进目录」少四步。
@@ -68,6 +99,34 @@ class SettingsWindow(QWidget):
         self._build_buttons()
 
     # ------------------------------------------------------------------
+    def _fit_to_screen(self):
+        """
+        初始尺寸 = 「想要的」与「屏幕装得下的」里小的那个。
+
+        为什么还要这一步：每页现在都是滚动区，**窗口下限不再由内容决定**，
+        但**初始尺寸**仍然是写死的 760×600 —— 在 1366×768 这类小屏上，
+        连标题栏带页签一起就顶出屏幕了。这里按当前屏幕的可用区（含扣除
+        任务栏）封顶，所以笔记本上打开也是完整可见的。
+
+        Why this is still needed: every page is a scroll area now, so the
+        window's *minimum* no longer comes from the content -- but the
+        *initial* size was a hard-coded 760x600, which on a 1366x768 laptop
+        overflows the screen once the title bar and tabs are added.  Cap it
+        against the available geometry (taskbar already deducted).
+        """
+        want_w, want_h = 780, 620
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            want_w = min(want_w, int(area.width() * 0.92))
+            want_h = min(want_h, int(area.height() * 0.92))
+        self.resize(max(520, want_w), max(400, want_h))
+        # 只给一个「别缩到没法用」的下限，高度**不再被内容顶高**。
+        # A floor only to keep it usable; the height is no longer dictated by
+        # the content.
+        self.setMinimumSize(520, 400)
+
+    # ------------------------------------------------------------------
     def _build_tabs(self):
         self.tabs.clear()
         self._tab_general()
@@ -76,6 +135,7 @@ class SettingsWindow(QWidget):
         self._tab_behavior()
         self._tab_actions()
         self._tab_advanced()
+        self._tab_serifu()
         self._tab_about()
 
     def _build_buttons(self):
@@ -95,6 +155,38 @@ class SettingsWindow(QWidget):
         row.addWidget(self.btn_close)
         self._outer.addLayout(row)
 
+    def _page(self):
+        """
+        建一页**可自由滚动**的内容区 / A scrollable page.
+
+        **每一页都必须用它**，不要直接 `QVBoxLayout(QWidget())`。
+        以前所有页都是裸布局，于是内容一多，窗口的 minimumSizeHint 就跟着涨 ——
+        窗口被撑到比屏幕还高，**底部那几项根本没法点到**，而用户又没法把窗口
+        缩回屏幕内（它有下限）。高分屏 / 笔记本的小屏上尤其明显。
+        滚动区把「内容多高」和「窗口多高」解耦：窗口随用户拖，超出就出滚动条。
+
+        Every page must go through this.  They used to be bare layouts, so the
+        window's minimum size hint grew with the content: taller than the
+        screen, with the bottom controls unreachable, and no way to shrink it
+        back (it had a floor).
+
+        左边距设为 0、右侧留一点，是为了让滚动条不压在分组框的边框上。
+        The right margin leaves room for the scroll bar so it does not overlap
+        the group boxes' borders.
+        """
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        # 只允许纵向滚动：内容宽度必须跟随窗口，否则会出现横向滚动条。
+        # Vertical only: the width follows the window, otherwise a horizontal
+        # bar appears too.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 10, 0)
+        scroll.setWidget(w)
+        return scroll, v
+
     def _group(self, title: str) -> QGroupBox:
         g = QGroupBox(title)
         g.setLayout(QFormLayout())
@@ -105,8 +197,7 @@ class SettingsWindow(QWidget):
     # ------------------------------------------------------------------
     def _tab_general(self):
         t = self.t
-        w = QWidget()
-        v = QVBoxLayout(w)
+        w, v = self._page()
 
         g = self._group(t.t("grp.language"))
         self.lang_combo = QComboBox()
@@ -183,8 +274,7 @@ class SettingsWindow(QWidget):
     # ------------------------------------------------------------------
     def _tab_characters(self):
         t = self.t
-        w = QWidget()
-        v = QVBoxLayout(w)
+        w, v = self._page()
 
         g2 = self._group(t.t("grp.character"))
         self.char_combo = QComboBox()
@@ -210,6 +300,40 @@ class SettingsWindow(QWidget):
         dirs_row.addLayout(btns)
         g2.layout().addRow(t.t("lbl.character_dirs"), dirs_row)
         v.addWidget(g2)
+
+        # 已安装角色管理。1.0.8 之前只能加不能删 —— 装完就没法管了。
+        # Installed-character library.  Before 1.0.8 there was no way to remove
+        # a pack after adding it.
+        gl = self._group(t.t("grp.library"))
+        self.library = QTableWidget(0, 4)
+        self.library.setHorizontalHeaderLabels(
+            [t.t("lib.col.name"), t.t("lib.col.images"),
+             t.t("lib.col.source"), t.t("lib.col.state")])
+        self.library.verticalHeader().setVisible(False)
+        self.library.setSelectionBehavior(QTableWidget.SelectRows)
+        self.library.setEditTriggers(QTableWidget.NoEditTriggers)
+        # 行高必须显式设：默认行高按字号算，**塞不下**我们要放进去的按钮。
+        # The row height must be set explicitly: the default is sized for the
+        # font and will clip the buttons we put in each row.
+        self.library.verticalHeader().setDefaultSectionSize(34)
+        lib_row = QVBoxLayout()
+        lib_row.addWidget(self.library, 1)
+        lib_btns = QHBoxLayout()
+        b_toggle = QPushButton(t.t("btn.toggle_char"))
+        b_del = QPushButton(t.t("btn.delete_char"))
+        b_toggle.clicked.connect(self._toggle_character)
+        b_del.clicked.connect(self._delete_character)
+        lib_btns.addWidget(b_toggle)
+        lib_btns.addWidget(b_del)
+        lib_btns.addStretch(1)
+        lib_row.addLayout(lib_btns)
+        gl.layout().addRow(lib_row)
+        hint_lib = QLabel(t.t("hint.library"))
+        hint_lib.setWordWrap(True)
+        hint_lib.setStyleSheet("color: palette(mid); font-size: 11px;")
+        gl.layout().addRow("", hint_lib)
+        v.addWidget(gl)
+        self._fill_library()
 
         gp = self._group(t.t("grp.pack"))
         pack_row = QHBoxLayout()
@@ -296,8 +420,7 @@ class SettingsWindow(QWidget):
     # ------------------------------------------------------------------
     def _tab_appearance(self):
         t = self.t
-        w = QWidget()
-        v = QVBoxLayout(w)
+        w, v = self._page()
         g = self._group(t.t("grp.appearance"))
 
         self.scale_spin = QDoubleSpinBox()
@@ -329,8 +452,7 @@ class SettingsWindow(QWidget):
     # ------------------------------------------------------------------
     def _tab_behavior(self):
         t = self.t
-        w = QWidget()
-        v = QVBoxLayout(w)
+        w, v = self._page()
         g = self._group(t.t("grp.behavior"))
 
         self.max_spin = QSpinBox()
@@ -530,8 +652,7 @@ class SettingsWindow(QWidget):
     # ------------------------------------------------------------------
     def _tab_actions(self):
         t = self.t
-        w = QWidget()
-        v = QVBoxLayout(w)
+        w, v = self._page()
         v.addWidget(QLabel(t.t("actions.hint")))
 
         self.action_table = QTableWidget(0, 5)
@@ -637,8 +758,7 @@ class SettingsWindow(QWidget):
     # ------------------------------------------------------------------
     def _tab_advanced(self):
         t = self.t
-        w = QWidget()
-        v = QVBoxLayout(w)
+        w, v = self._page()
 
         g = self._group(t.t("grp.window_filter"))
         self.titles_edit = QPlainTextEdit()
@@ -719,10 +839,202 @@ class SettingsWindow(QWidget):
         hint_p.setWordWrap(True)
         hint_p.setStyleSheet("color: palette(mid); font-size: 11px;")
         gp.layout().addRow("", hint_p)
+        # 历史统计只读 + 一个清空按钮。清空是破坏性的，所以要确认。
+        self.stats_label = QLabel()
+        self.stats_label.setStyleSheet("color: palette(mid); font-size: 11px;")
+        gp.layout().addRow(t.t("lbl.pomo_stats"), self.stats_label)
+        b_stats_clear = QPushButton(t.t("btn.clear_stats"))
+        b_stats_clear.clicked.connect(self._clear_pomodoro_stats)
+        gp.layout().addRow("", b_stats_clear)
+        self._refresh_pomodoro_stats()
         v.addWidget(gp)
 
         v.addStretch(1)
         self.tabs.addTab(w, t.t("tab.advanced"))
+
+    # ------------------------------------------------------------------
+    # 气泡台词 / speech balloons
+    # ------------------------------------------------------------------
+    def _tab_serifu(self):
+        """
+        气泡台词**独立成页**（1.0.8）。
+
+        为什么不给它塞进「高级」：那一页已经有窗口过滤、维护、番茄时钟三组，
+        再加一组就开始按「跟谁都不太搭」堆在一起了。台词是一个有自己完整
+        工作流的玩法（写台词、调时长、挑角色），挤在别的功能下面既难找，
+        也会让那一页越滚越长。
+
+        Why its own page instead of "Advanced": that page already carries window
+        filtering, maintenance and the Pomodoro timer.  Phrases are a workflow of
+        their own (write lines, tune timing, pick a character), so piling them
+        under unrelated features makes them hard to find and the page harder to
+        scroll.
+        """
+        t = self.t
+        w, v = self._page()
+        gs = self._group(t.t("grp.serifu"))
+        self.serifu_spins = {}
+        self.serifu_enabled = QCheckBox(t.t("lbl.serifu_enabled"))
+        self.serifu_enabled.setChecked(
+            bool(self.settings.get("serifu_enabled", True)))
+        gs.layout().addRow("", self.serifu_enabled)
+        for key, lo, hi in (("serifu_seconds", 1, 60),
+                            ("serifu_interval", 0, 3600),
+                            ("serifu_font_px", 9, 32)):
+            sp = QSpinBox()
+            sp.setRange(lo, hi)
+            sp.setValue(int(self.settings.get(key, {"serifu_seconds": 4,
+                                                    "serifu_interval": 0,
+                                                    "serifu_font_px": 13}[key])))
+            sp.valueChanged.connect(
+                lambda val, k=key: self.settings.set(k, int(val)))
+            gs.layout().addRow(t.t("lbl." + key), sp)
+            self.serifu_spins[key] = sp
+        self.serifu_phrases = QPlainTextEdit()
+        self.serifu_phrases.setPlaceholderText(t.t("serifu.phrases_hint"))
+        self.serifu_phrases.setMaximumHeight(110)
+        self.serifu_phrases.setPlainText(
+            "\n".join(self.settings.get("serifu_phrases", []) or []))
+        gs.layout().addRow(t.t("lbl.serifu_phrases"), self.serifu_phrases)
+        hint_s = QLabel(t.t("hint.serifu"))
+        hint_s.setWordWrap(True)
+        hint_s.setStyleSheet("color: palette(mid); font-size: 11px;")
+        gs.layout().addRow("", hint_s)
+        v.addWidget(gs)
+
+        v.addStretch(1)
+        self.tabs.addTab(w, t.t("tab.serifu"))
+
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 角色库管理 / installed-character library
+    # ------------------------------------------------------------------
+    def _fill_library(self):
+        """列出全部已安装角色（含被停用的）/ List every installed character."""
+        from ..engine.manager import CHARACTERS_DIR, list_characters
+        disabled = {str(x) for x in
+                    (self.settings.get("disabled_chars", []) or [])}
+        self.library.setRowCount(0)
+        for label, path in list_characters(self.settings, include_disabled=True):
+            n = len([f for f in os.listdir(os.path.join(path, "img"))
+                     if f.lower().endswith(".png")]) \
+                if os.path.isdir(os.path.join(path, "img")) else 0
+            builtin = os.path.abspath(path).startswith(
+                os.path.abspath(CHARACTERS_DIR))
+            source = self.t.t("lib.source_builtin") if builtin else path
+            row = self.library.rowCount()
+            self.library.insertRow(row)
+            for col, val in enumerate((label, str(n), source, "")):
+                item = QTableWidgetItem(val)
+                if col in (1, 3):
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.library.setItem(row, col, item)
+            self.library.setItem(row, 3, QTableWidgetItem(
+                self.t.t("lib.state_off") if label in disabled
+                else self.t.t("lib.state_on")))
+        self.library.resizeColumnsToContents()
+
+    def _selected_library_row(self) -> int:
+        rows = self.library.selectionModel().selectedRows() \
+            if self.library.selectionModel() else []
+        return rows[0].row() if rows else -1
+
+    def _toggle_character(self):
+        """停用 / 启用一个角色 / Disable or enable a character."""
+        row = self._selected_library_row()
+        if row < 0:
+            return
+        item = self.library.item(row, 0)
+        if item is None:
+            return
+        label = item.text()
+        disabled = [str(x) for x in
+                    (self.settings.get("disabled_chars", []) or [])]
+        if label in disabled:
+            disabled.remove(label)
+        else:
+            disabled.append(label)
+        self.settings.set("disabled_chars", disabled)
+        self._fill_library()
+        self._fill_characters()
+
+    def _delete_character(self):
+        """
+        删除一个角色包（真的删文件）/ Delete a character pack from disk.
+
+        装在 Program Files 下的角色**普通用户删不动**，这不是 bug 也不该假装
+        成功：捕获权限错误，把完整路径摆给用户，让他自己删或用管理员身份重试。
+        Packs under Program Files cannot be removed without elevation.  Do not
+        pretend that worked: say so and hand over the exact path.
+        """
+        row = self._selected_library_row()
+        if row < 0:
+            return
+        item = self.library.item(row, 0)
+        if item is None:
+            return
+        label = item.text()
+        from ..engine.manager import list_characters
+        path = next((p for lb, p in
+                     list_characters(self.settings, include_disabled=True)
+                     if lb == label), None)
+        if path is None:
+            return
+        if QMessageBox.question(
+                self, self.t.t("settings.title"),
+                self.t.t("msg.delete_char_confirm").format(label)) != QMessageBox.Yes:
+            return
+        import shutil
+        try:
+            shutil.rmtree(path)
+        except PermissionError:
+            QMessageBox.warning(
+                self, self.t.t("settings.title"),
+                self.t.t("msg.delete_char_denied").format(path))
+            return
+        except OSError as exc:
+            QMessageBox.warning(
+                self, self.t.t("settings.title"),
+                self.t.t("msg.delete_char_failed").format(label, exc))
+            return
+        # 删掉了就把「当前角色」和停用列表里的残留一起清掉
+        # Drop the dangling references to what we just deleted.
+        disabled = [x for x in
+                    (self.settings.get("disabled_chars", []) or [])
+                    if str(x) != label]
+        self.settings.set("disabled_chars", disabled)
+        if self.settings.get("character", "") == label:
+            left = list_characters(self.settings)
+            if left:
+                self.settings.set("character", left[0][0])
+        self._fill_library()
+        self._fill_characters()
+
+    def _refresh_pomodoro_stats(self):
+        """把今日/累计统计显示在设置里 / Show today's and total figures."""
+        stats = getattr(self.manager, "pomostats", None)
+        if stats is None or not hasattr(self, "stats_label"):
+            return
+        try:
+            text = "%s ｜ %s %s" % (self.t.t("pomo.stats_today")
+                                    .format(stats.today_text()),
+                                    self.t.t("lbl.pomo_stats_total"),
+                                    stats.total_text())
+        except Exception:  # noqa: BLE001
+            return
+        self.stats_label.setText(text)
+
+    def _clear_pomodoro_stats(self):
+        """清空番茄钟历史（破坏性，要确认）/ Wipe the Pomodoro history."""
+        stats = getattr(self.manager, "pomostats", None)
+        if stats is None:
+            return
+        if QMessageBox.question(
+                self, self.t.t("settings.title"),
+                self.t.t("msg.clear_stats_confirm")) != QMessageBox.Yes:
+            return
+        stats.clear()
+        self._refresh_pomodoro_stats()
 
     def _open_log(self):
         """
@@ -904,8 +1216,7 @@ class SettingsWindow(QWidget):
     def _tab_about(self):
         from .. import __version__ as _ver
         
-        w = QWidget()
-        v = QVBoxLayout(w)
+        w, v = self._page()
         # 版本号 + 开发者：这是「关于」页存在的全部意义。之前只有一段说明
         # 文字，用户想知道「这是哪个版本、谁做的」只能自己去猜。
         # The version and the author are the entire point of an About page;
@@ -987,6 +1298,13 @@ class SettingsWindow(QWidget):
         # 1.0.6：开机自启真的会写回配置了（此前置灰，不写回）。
         # Since 1.0.6 launch-at-login is written back for real.
         s.set("start_with_windows", self.startup.isChecked())
+        s.set("serifu_enabled", self.serifu_enabled.isChecked())
+        # 一行一句；空行丢掉。空列表 = 用内置台词。
+        # One phrase per line, blanks dropped.  An empty list means "use the
+        # built-ins".
+        s.set("serifu_phrases",
+              [ln.strip() for ln in
+               self.serifu_phrases.toPlainText().splitlines() if ln.strip()])
         s.set("taskbar_panel", self.taskbar_panel.isChecked())
         s.set("summon_count", self.summon_count.value())
         s.set("spawn_spread", self.spread.isChecked())

@@ -1769,7 +1769,7 @@ def main() -> int:
         _w14.show()
         app.processEvents()
         _titles = [_w14.tabs.tabText(i) for i in range(_w14.tabs.count())]
-        check(_w14.tabs.count() == 7, "设置窗口共 7 页", str(_titles))
+        check(_w14.tabs.count() == 8, "设置窗口共 8 页", str(_titles))
         check("角色" in _titles, "存在「角色」页", str(_titles))
 
         if "角色" in _titles:
@@ -1801,7 +1801,7 @@ def main() -> int:
         _t2 = [_w14.tabs.tabText(i) for i in range(_w14.tabs.count())]
         check(_i14 >= 0 and "Characters" in _t2,
               "切到 en_US 后页签标题正确", str(_t2))
-        check(_w14.tabs.count() == 7, "切语言后仍是 7 页", str(_t2))
+        check(_w14.tabs.count() == 8, "切语言后仍是 8 页", str(_t2))
         _w14.close()
         _m14._settings_window = None
         from shimeji.i18n import set_language as _sl
@@ -1809,6 +1809,86 @@ def main() -> int:
         _m14.quit()
     finally:
         _shutil.rmtree(_d14, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    section("设置窗口：内容可自由滚动，窗口不被内容顶高")
+    # 以前每一页都是裸布局，内容一多 minimumSizeHint 就跟着涨 —— 窗口被撑到
+    # 比屏幕还高，底部那几项点不到，用户又没法缩回去（它有下限）。
+    # 现在每页都是 QScrollArea：窗口随用户拖，超出就出滚动条。
+    _d15 = _tempfile.mkdtemp(prefix="utopet_scroll_")
+    try:
+        _s15 = _S3(os.path.join(_d15, "settings.json"))
+        _s15.set("character", "Miku")
+        _s15.set("taskbar_panel", False)
+        _m15 = Manager(app, _s15)
+        _m15.timer.stop()
+        _m15.dismiss_all()
+        _w15 = SettingsWindow(_m15)
+        _w15.show()
+        app.processEvents()
+
+        from PySide6.QtWidgets import QScrollArea as _SA
+        _pages = [_w15.tabs.widget(i) for i in range(_w15.tabs.count())]
+        _wrapped = sum(1 for p in _pages if isinstance(p, _SA))
+        check(_wrapped == _w15.tabs.count(),
+              "每一页都是滚动区（内容再多也不会顶高窗口）",
+              "%d/%d" % (_wrapped, _w15.tabs.count()))
+
+        # 把窗口压扁：**逐页切过去**再看。
+        # 隐藏的页签不做布局更新，直接读它的滚动条范围永远是 0 ——
+        # 那是「还没算」而不是「不需要滚」。
+        #
+        # 断言不是「每页都必须有滚动条」：短页（如「关于」）和内容会收缩的页
+        # （角色页的表格、行为页的堆叠区）本来就不需要滚，硬要它们滚才是错的。
+        # 真正要保证的是两条：①窗口不会被内容顶回原高度；②内容够高的页能滚。
+        _w15.resize(_w15.width(), 240)
+        app.processEvents()
+        _floor = _w15.minimumHeight()
+        check(_w15.height() <= _floor + 1,
+              "压到下限就停住：高度不再被内容顶高",
+              "实际=%d 下限=%d" % (_w15.height(), _floor))
+        check(_floor <= 420,
+              "窗口下限足够小（用户能把窗口压得很矮，而不是被内容锁死）",
+              str(_floor))
+
+        _bars = {}
+        for _i in range(_w15.tabs.count()):
+            _w15.tabs.setCurrentIndex(_i)
+            app.processEvents()
+            _bars[_w15.tabs.tabText(_i)] = \
+                _w15.tabs.widget(_i).verticalScrollBar().maximum() > 0
+        print("   压扁后各页是否有滚动条:", _bars, flush=True)
+        _tall = _w15.tabs.tabText(_w15.tabs.count() - 3)   # 「角色」页
+        check(_bars.get(_tall) is True,
+              "内容最高的「角色」页在窄窗口下确实能滚", str(_bars))
+        check(any(_bars.values()), "滚动机制确实生效（至少一页出现滚动条）",
+              str(_bars))
+
+        # 拉高窗口：滚动条随之消失，不留一条永远在的假滚动条
+        _w15.resize(_w15.width(), 1000)
+        app.processEvents()
+        _max = 0
+        for _i in range(_w15.tabs.count()):
+            _w15.tabs.setCurrentIndex(_i)
+            app.processEvents()
+            _max = max(_max, _w15.tabs.widget(_i).verticalScrollBar().maximum())
+        check(_max == 0, "窗口够高时滚动条自动消失",
+              "max=%d" % _max)
+
+        # 初始尺寸不能超出屏幕可用区
+        from PySide6.QtGui import QGuiApplication as _QGA
+        _sc = _QGA.primaryScreen()
+        if _sc is not None:
+            _ar = _sc.availableGeometry()
+            check(_w15.width() <= _ar.width() and _w15.height() <= _ar.height(),
+                  "窗口初始尺寸不超过屏幕可用区（任务栏已扣除）",
+                  "%dx%d vs %dx%d" % (_w15.width(), _w15.height(),
+                                      _ar.width(), _ar.height()))
+        _w15.close()
+        _m15._settings_window = None
+        _m15.quit()
+    finally:
+        _shutil.rmtree(_d15, ignore_errors=True)
 
     # ------------------------------------------------------------------
     section("1.0.6 安装向导必须保留「选择安装位置」页")

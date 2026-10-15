@@ -8,5 +8,5 @@ A desktop-mascot engine re-implemented in Python + PySide6, compatible with the
 original Actions.xml / Behavior.xml configuration.
 """
 
-__version__ = "1.0.7-2"
+__version__ = "1.0.8"
 __all__ = ["__version__"]

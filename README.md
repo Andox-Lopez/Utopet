@@ -121,7 +121,9 @@ resident **in the tray**, and Tray menu → "Show taskbar panel" brings it back.
 | **CalMode 养成状态**：心情/体力/健康/好感随时间漂移，先折算成「开心/普通/状态不佳/生病」，再调整各行为的出现频率 —— 状态**只改频率不改动作**，候选行为集合始终一致 | **CalMode state**: mood/stamina/health/rapport drift over time, fold through thresholds into Happy/Normal/Poor/Ill, then bias how often each behaviour comes up — it changes **frequency only, never the action set** |
 | **会话恢复**：记住上次退出时养了几只、站在哪、分别是什么角色，并**接着做刚才那件事**（连已经跑到的帧数一起恢复；只对同一个行为生效） | **Session restore**: remembers how many mascots you had, where they stood and which character each was — and **continues the activity they were doing**, down to the frame count (only when the same behaviour is chosen) |
 | **开机自启**：勾选即写 `HKCU\...\Run`，打包版指向 exe 自己、源码版用 `pythonw.exe` | **Launch at login**: writes `HKCU\...\Run`; the packaged build points at the exe itself, the source build uses `pythonw.exe` |
-| **番茄时钟**：25 分钟工作 + 5 分钟休息、每 4 轮一次长休息，阶段自动衔接并用系统通知提醒；面板与托盘两处入口，窗口关闭计时继续，打开时**居中到鼠标所在屏幕**；休息开始时宠物会做个动作 | **Pomodoro timer**: 25 min work + 5 min break, a long break every 4 rounds, chained automatically with a system notification per transition; entries in the panel and the tray, the clock keeps running when the window closes, and opening **centres it on the screen under the cursor**; the mascot reacts when a break starts |
+| **气泡台词**：宠物随机在头顶冒出一句话（原版 Serifu）。台词优先取角色包里的 `conf\serifu.txt`，其次是你的台词库，最后是内置默认；原版包里名为「セリフ」的行为、番茄钟阶段切换都会触发。气泡不吃鼠标点击、不抢焦点，并跟着宠物走 | **Speech balloons**: the pets say a random line above their heads (the original's Serifu). Lines come from the pack's `conf\serifu.txt` first, then your own list, then built-ins; the original's "serifu" behaviour and every Pomodoro transition trigger one. Balloons ignore clicks, never steal focus, and follow the pet |
+| **角色库管理**（设置 → 角色）：列出全部已装角色的名称/图片数/来源/状态，可停用（只是从选择器里藏起来，不动文件）或删除（权限不足时给出完整路径，不假装成功） | **Character library** (Settings → Characters): every installed pack with its image count, source and state; disable it (hidden from the pickers, nothing deleted) or delete it (on a permission error you get the exact path, never a fake success) |
+| **番茄时钟**：25 分钟工作 + 5 分钟休息、每 4 轮一次长休息，阶段自动衔接并用系统通知提醒；面板与托盘两处入口，窗口关闭计时继续，打开时**居中到鼠标所在屏幕**；休息开始时宠物会做个动作；窗口里显示「今日 N 个 · X 小时 Y 分」与连续天数 | **Pomodoro timer**: 25 min work + 5 min break, a long break every 4 rounds, chained automatically with a system notification per transition; entries in the panel and the tray, the clock keeps running when the window closes, and opening **centres it on the screen under the cursor**; the mascot reacts when a break starts; the window shows today's count, focus time and streak |
 | **角色包一键导入 / 导出**：zip 直接拖进设置窗口就能装（自动识别标准包 / 原版平铺 / 多套一层目录三种布局），缺 `Actions.xml`/`Behavior.xml`/`Mascot.xsd` 时用内置原版模板补齐且**只填不改**；导出成 zip 带同样的补齐 | **One-click character-pack import / export**: drag a zip onto Settings to install (three layouts auto-detected); missing `Actions.xml`/`Behavior.xml`/`Mascot.xsd` are filled from built-in original templates, **add-only, never overwritten**; export produces a zip with the same filling |
 | **程序图标**：512×512 主图派生出三份 —— 窗口/任务栏用 `logo.png`，系统托盘用 `logo.ico`（16px 去圆角，因为托盘只有 16×16，圆角白白吃掉 1/4 面积），exe 与安装包用 `app.ico`（带 256px 大尺寸） | **Icons**: one 512×512 master derives three files — `logo.png` for windows/taskbar, `logo.ico` for the tray (16 px squared off: the tray slot is 16×16, and rounded corners would waste a quarter of it), `app.ico` for the exe and installer (carries 256 px for Explorer) |
 | **常驻任务栏**：控制面板是普通窗口，带真实任务栏按钮，可固定到任务栏；`AppUserModelID` 让系统显示自家 Logo 而非 python.exe。关掉面板后**托盘是唯一常驻入口**，一键就能叫回面板 | **Taskbar-resident**: the control panel is a normal window with a real taskbar button that can be pinned; `AppUserModelID` makes Windows show our logo instead of python.exe. Once the panel is closed the **tray is the single persistent entry**, and it brings the panel back in one click |
@@ -147,6 +149,8 @@ E:\shimejee-remake\
 │   ├── settings.py  cfgfmt.py   设置持久化 + 带注释 JSON / settings & commented JSON
 │   ├── custom.py                自定义动作 / custom actions
 │   ├── characterpack.py         角色包导入·导出·描述文件增补 / pack import-export
+│   ├── serifu.py                气泡台词库（无 Qt）/ phrase book (Qt-free)
+│   ├── pomodoro.py  pomodoro_stats.py  番茄钟逻辑与统计 / timer & stats (Qt-free)
 │   ├── assets\                  logo.png / logo.ico · conf_defaults\ 原版模板
 │   ├── xml\
 │   │   ├── aliases.py           日·中·英标签别名 / trilingual tag aliases
@@ -160,7 +164,7 @@ E:\shimejee-remake\
 │   │   ├── petstate.py          CalMode 养成状态 / CalMode pet state
 │   │   ├── brain.py             行为选择 / behaviour selection
 │   │   └── manager.py           托盘·面板·多宠物·主循环 / tray, panel, lifecycle
-│   └── gui\                     设置窗口 · 动作编辑器 · 任务栏面板 · 自绘控件
+│   └── gui\                     设置窗口 · 动作编辑器 · 任务栏面板 · 番茄钟 · 气泡
 │                                settings & editor & taskbar panel & widgets
 ├── characters\<角色>\            img\ + conf\
 ├── tools\make_logo.py           Logo 绘制脚本 / logo drawing script

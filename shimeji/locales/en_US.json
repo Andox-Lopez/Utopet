@@ -232,5 +232,10 @@
   "lbl.idle_max_sec": "Max gather time (seconds)",
   "lbl.idle_max_never": "never auto-release",
   "hint.idle_gather": "Gathered pets are released automatically: a cursor movement dismisses them (after at least 3 seconds), and leaving the cursor still past the value above releases them too. In the original configuration the chain that follows \"gather around the cursor\" is closed, so older versions never let them out again -- which is why this feature shipped disabled.",
-  "hint.window_maximized": "Maximised / full-screen windows take no part in window interaction: their bottom edge coincides with the screen floor, so a pet standing on the ground would endlessly trigger \"crawl along the window's bottom edge\". Ordinary windowed windows are unaffected."
+  "hint.window_maximized": "Maximised / full-screen windows take no part in window interaction: their bottom edge coincides with the screen floor, so a pet standing on the ground would endlessly trigger \"crawl along the window's bottom edge\". Ordinary windowed windows are unaffected.",
+  "grp.avoid_input": "Input avoidance",
+  "lbl.avoid_input": "Move pets away while you type",
+  "lbl.avoid_margin": "Zone size",
+  "lbl.avoid_typing": "Stop avoiding after",
+  "hint.avoid_input": "A pet sitting on your input box or IME candidate window gets in the way, so it moves aside while it detects you typing.\nNote: modern apps (browsers, VS Code, ...) do not tell outside programs where the input box is, so this actually avoids the area *around the cursor*; it is off if your input box is elsewhere.\nOnly pets already inside the zone are moved; they are otherwise left alone."
 }

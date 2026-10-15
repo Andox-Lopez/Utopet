@@ -68,7 +68,11 @@ class PomodoroWindow(QWidget):
         # 计时要一直看得见才有用；不想看可以关掉窗口，托盘随时叫回来。
         # A timer is only useful while visible; hide it and the tray brings
         # it back.
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        # 置顶状态存在设置里，所以**每次打开窗口**都按它重新设一次标志 ——
+        # 不能只在构造时设，用户可能在设置里关掉它之后才打开这个窗口。
+        # Applied on every open, not only in the constructor: the user may have
+        # switched it off in settings before opening this window.
+        self._apply_ontop_flag()
         self.setMinimumWidth(300)
 
         v = QVBoxLayout(self)
@@ -128,6 +132,38 @@ class PomodoroWindow(QWidget):
         row.addWidget(self.btn_skip, 1)
         row.addWidget(self.btn_reset, 1)
         v.addLayout(row)
+
+        # ── 窗口样式开关（1.0.11 起）────────────────────────────────
+        # 单独一行、用 checkable 按钮：它们改的是**窗口自己**，和上面那三个
+        # 改计时状态的不是一类东西，混在一排会让人以为点错了会改时间。
+        # A separate row of checkable buttons: these change the *window*, while
+        # the three above change the *timer state* — mixing them invites
+        # misclicks that look like they changed the clock.
+        opt_row = QHBoxLayout()
+        opt_row.setSpacing(6)
+        self.btn_ontop = QCheckBox()
+        self.btn_ontop.toggled.connect(self._on_ontop_toggled)
+        self.btn_hidebg = QCheckBox()
+        self.btn_hidebg.toggled.connect(self._on_hidebg_toggled)
+        opt_row.addWidget(self.btn_ontop)
+        opt_row.addWidget(self.btn_hidebg)
+        opt_row.addStretch(1)
+        v.addLayout(opt_row)
+
+        #: 「隐藏背景」要用**按区域**的鼠标穿透，而 Qt 只提供整窗级别的
+        #: `WA_TransparentForMouseEvents`（一设整窗连那颗按钮一起穿透）。
+        #: 实现方式见 `_apply_mouse_passthrough` —— 它依赖 `nativeEvent`
+        # 处理 `WM_NCHITTEST`，**只有真正跑通并验证过才把开关打开**。
+        #: 在那之前整组按钮置灰。
+        #: Per-region pass-through needs WM_NCHITTEST; Qt only offers a
+        #: whole-window flag that would also disable the very button that
+        #: restores the window.  Left disabled until that path is verified.
+        self._passthrough_ready = _HIDE_BG_ENABLED
+        self.btn_ontop.setEnabled(self._passthrough_ready)
+        self.btn_hidebg.setEnabled(self._passthrough_ready)
+        if not self._passthrough_ready:
+            self.btn_ontop.setToolTip(t.t("pomo.wip"))
+            self.btn_hidebg.setToolTip(t.t("pomo.wip"))
 
         self.hint_label = QLabel()
         self.hint_label.setWordWrap(True)

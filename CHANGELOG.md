@@ -10,6 +10,61 @@
 
 ---
 
+## [1.0.10] — 2026-10-15
+
+**你打字的时候，宠物会让开。**
+**Pets move out of your way while you type.**
+
+### 新增 Added
+
+- **输入回避。** 检测到你在打字时，压在输入区上的宠物会主动跑开，直到离开那块区域。
+  理由很实际：一只宠物蹲在输入框或者输入法候选窗上，既挡视线，也容易被手肘扫到。
+  - 在 **设置 → 行为** 里可以关掉，也可以调回避区的大小（默认 420×160，
+    覆盖一行输入框加候选窗）和「停手多久之后不再回避」（默认 1.5 秒）。
+  - 只在宠物**已经压到**这块区域时才干预它，其余时候完全不打扰 —— 桌面上
+    没有宠物在打字区附近时，这个功能等于不存在。
+  - 输入法候选窗弹出来时，那块区域也一并算进去（选字的时候更挡视线）。
+  - 逃跑方向是「离那一块更远的那一侧」，并且**在它跑开之前不会改**。
+    这一条是实测出来的：每帧重算方向会让宠物在区域中间来回折返，看起来像
+    在抽搐而不是在跑。
+
+  **Keeps pets off the area you are typing in.**  A pet sitting on an input box
+  or an IME candidate window gets in the way and invites an elbow accident.
+  - Configure or disable it under **Settings → Behaviour**; the zone size
+    (420×160 by default, one input line plus a candidate list) and the
+    idle timeout (1.5 s) are adjustable.
+  - Only pets *already inside* the zone are moved.  With none nearby the
+    feature does nothing at all.
+  - An open IME candidate window joins the zone.
+  - The flee direction is the side further from the zone, and is **not**
+    recomputed mid-run: doing so made the pet double back around the centre,
+    which read as a twitch rather than an escape.
+
+- 设置 → 行为 新增「输入回避」组；设置项 `avoid_input`、`avoid_input_margin_x`、
+  `avoid_input_margin_y`、`avoid_input_typing_ms`。三语新增 5 条文案（234 → 239 键）。
+
+### ⚠️ 已知限制 Known limitation
+
+- **在现代应用里，Windows 不告诉任何外部程序「你的输入框在哪」**，所以这个功能
+  实际回避的是**光标附近**那一块，不是「输入框附近」。
+  浏览器、VS Code、Electron 这类应用自己绘制光标，不提供系统 caret ——
+  实测 Firefox 下 67 次采样拿到的光标矩形**全部为空**，Chrome 同样。
+  记事本、Office 这类传统 Windows 控件能拿到**精确**位置，程序会自动切到精确模式。
+  The exact caret rect is unavailable on modern apps, so the zone is
+  "around the cursor".  Classic Win32 text controls (Notepad, Office) do report
+  it, and the app switches to exact mode for those automatically.
+- 键盘活动是用 `GetAsyncKeyState` 逐键判定的，因此**按住不放的修饰键
+  （Shift/Ctrl）可能在某些机器上漏判**（实测本机 Alt 能读到、Shift/Ctrl 读不到）。
+  键入文字本身总能被检出 —— 只有「一直按住某个键不放」这种输入可能不被算作
+  「正在输入」。 Keyboard activity is detected per virtual-key; held modifiers
+  may be missed on some machines.  Ordinary typing is always detected.
+
+### 测试 Tests
+
+- `verify_physics_101.py` 269 → **315 项**（新增 46 项）。
+
+---
+
 ## [1.0.9] — 2026-10-15
 
 **这一版不加新功能，专门收 1.0.x 一路挂下来的三条「已知限制」。**

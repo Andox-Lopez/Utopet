@@ -32,6 +32,8 @@ from ..settings import APP_ROOT, CHARACTERS_DIR, DATA_DIR, Settings
 from ..xml.config import (ActionSet, BehaviorSet, find_conf,
                           load_actions, load_behavior)
 from .brain import Brain
+from .avoid import (DEFAULT_MARGIN_X, DEFAULT_MARGIN_Y,
+                    DEFAULT_TYPING_WINDOW_MS, AvoidZones)
 from .environment import Environment, Pt
 from .mascot import CharacterBundle, ImageSet, Mascot
 from .runtime import create_action
@@ -43,6 +45,14 @@ BEHAVIOR_DRAGGED = "ドラッグされる"
 BEHAVIOR_THROWN = "投げられる"
 BEHAVIOR_FALL = "落下する"
 BEHAVIOR_GATHER = "マウスの周りに集まる"
+#: 1.0.10：输入回避用的「跑开」行为。三个内置角色包都有这个同名行为，且它是
+#: **终点行为**（无「次の行動リスト」），跑完自然结束 —— 正好适合逃跑。
+#: ⚠️ 这不是系统保留名（原版没有这条），它是**按名字去角色包里找**的，找不到
+#: 就安静降级（见 `_avoid_run_behavior`）。第三方角色包可能没有。
+#: The flee behaviour, looked up *by name* in each character's own table: it is
+#: a terminal behaviour (no next-behaviour list), so the pet naturally stops
+#: when clear.  Third-party packs may lack it — degrade quietly.
+BEHAVIOR_RUN_AWAY = "ワークエリアの下辺を走る"
 #: 会话恢复时最多补多少帧 / how many frames session restore will fast-forward.
 #: 25 fps 下 20000 帧 ≈ 13 分钟；再长就不是「正在做的事」而是一段背景循环了。
 #: At 25 fps that is ~13 minutes; anything longer is not "what it was doing" but
@@ -187,6 +197,18 @@ class Manager(QObject):
         #: around the cursor" chain, and for how many ticks.
         self._gather_active = False
         self._gather_hold = 0
+        #: 1.0.10：输入回避区。用户打字时宠物跑开，逻辑全在 `engine/avoid.py`，
+        #: 这里只持有状态并驱动它。构造时不碰 Win32。
+        #: Input-avoidance zones; all logic lives in `engine/avoid.py`.
+        self.avoid = AvoidZones(
+            enabled=bool(settings.get("avoid_input", True)),
+            margin_x=int(settings.get("avoid_input_margin_x",
+                                      DEFAULT_MARGIN_X)),
+            margin_y=int(settings.get("avoid_input_margin_y",
+                                      DEFAULT_MARGIN_Y)),
+            typing_window_ms=int(settings.get("avoid_input_typing_ms",
+                                              DEFAULT_TYPING_WINDOW_MS)),
+        )
         self._settings_window = None
         self._panel = None
         self._panel_enabled = bool(settings.get("taskbar_panel", True))
@@ -746,6 +768,7 @@ class Manager(QObject):
     def tick(self):
         self.shared_env.refresh()
         self._check_idle()
+        self._check_input_avoid()
         for m in list(self.mascots):
             try:
                 self._tick_mascot(m)
@@ -1010,6 +1033,155 @@ class Manager(QObject):
             m.release_next_list = True
         log.info("idle-gather: released (%s)",
                  "cursor moved" if rearm else "timeout")
+
+    # ------------------------------------------------------------------
+    # 输入回避 / input avoidance (1.0.10)
+    # ------------------------------------------------------------------
+    def _avoid_run_behavior(self, mascot: Mascot) -> str | None:
+        """这只宠物自己的行为表里有没有「跑开」这条 / The flee behaviour, if it has one.
+
+        ⚠️ 必须按**这只宠物自己的** `CharacterBundle` 查（项目铁律：多角色下
+        每只宠物带自己的表）。`_force_behavior` 里那个 `self.actions` 判断是
+        全局表 —— 拿它来决定能不能跑，会给角色 B 的宠物排一个只有角色 A 有的
+        行为，然后静默失败。
+
+        第三方角色包可能没有这条行为，所以找不到就返回 None，安静降级：
+        **宁可宠物站在输入框旁边，也不要因为找不到行为而让它僵住。**
+        Look it up in *this* mascot's own table — the global one would let a pet
+        be queued for a behaviour only another character has.  Third-party packs
+        may lack it; degrade quietly rather than freezing the pet.
+        """
+        name = BEHAVIOR_RUN_AWAY
+        bundle = getattr(mascot, "bundle", None)
+        if bundle is not None:
+            actions = bundle.actions
+        else:
+            actions = self.actions
+        if name not in actions:
+            return None
+        if self.brain.behavior_by_name(mascot, name) is None:
+            return None
+        return name
+
+    @staticmethod
+    def _mascot_box(m: Mascot) -> tuple[int, int, int, int]:
+        """宠物在屏幕上占的矩形 `(left, top, right, bottom)`。
+
+        ⭐ **不能直接用 `QWidget.x()/width()`**：本方法在 `_tick_mascot`
+        **之前**跑，那一刻宠物可能还没有任何图片，QWidget 会给出默认尺寸，
+        判定范围完全失真（要么永远判不在区里，要么永远判在）。这里按
+        `mascot.py` 里的换算式自己算：图片尺寸未知时用基准坐标当尺寸下界。
+
+        按引擎的坐标公式推（`mascot.py` 顶部注释）：
+            left = anchor.x - base.x * scale                    （朝左）
+            left = anchor.x - (width - base.x) * scale         （朝右）
+            top  = anchor.y - base.y * scale
+
+        Must not use `QWidget.x()/width()`: this runs *before* `_tick_mascot`,
+        when the mascot may not have an image yet and Qt reports a default
+        size, which makes every test meaningless.  Derive it from the same
+        formula the engine uses instead.
+        """
+        base = m.base
+        scale = getattr(m, "scale", 1.0) or 1.0
+        iw, ih = m.width(), m.height()
+        # 图片还没设好时 Qt 报的是默认尺寸（往往 0 或很小），拿 base 当下界，
+        # 保证判的是一个「至少和精灵一样大」的范围而不是一个点。
+        # Fall back to the baseline size when no image is set yet.
+        bw = max(iw, int(base.x))
+        bh = max(ih, int(base.y))
+        if getattr(m, "look_right", False):
+            left = m.anchor.x - (bw - base.x) * scale
+        else:
+            left = m.anchor.x - base.x * scale
+        top = m.anchor.y - base.y * scale
+        return (int(left), int(top),
+                int(left + bw * scale), int(top + bh * scale))
+
+    def _check_input_avoid(self):
+        """
+        用户打字时把压在输入区上的宠物赶走 / Move pets off the typing area.
+
+        **每帧判定**（不是只在进入时触发一次）：宠物跑开了就不再管它；跑慢了
+        或撞回来就再逼一次。只有「进入区里才触发」的话，跑一小段就会停在
+        区的边缘 —— 看起来像卡住了。
+        Evaluated every tick, not once on entry: once-only leaves the pet
+        stranded at the zone edge, which reads as "stuck".
+
+        方向：`runtime.py` 里 `dx = (-vx if m.look_right else vx)`，而原版
+        「走る」的 `移動速度` 是负的（向左）。所以**翻转朝向就等于反向** ——
+        不需要为逃跑新增任何动作定义。
+        Direction comes from the engine, not from new assets: horizontal
+        velocity is negated when the pet faces right, and the original run
+        animation's velocity is negative, so flipping the facing flips the run.
+        """
+        if not self.avoid.enabled:
+            # 开关关着时也别留着上一帧的痕迹，否则关掉开关宠物还在躲。
+            self.avoid.rects = []
+            self.avoid.typing = False
+            self._clear_avoid_dirs()
+            return
+
+        tick_ms = max(10, int(self.settings.get("tick_ms", 40)))
+        # 键盘活动**每帧都要读**：这个信号的语义是「自上次调用以来」，
+        # 读得稀会漏掉按键。实测 260µs，相对 40ms 的帧长可以忽略。
+        # Must be polled every tick: the flag means "since the last call", so a
+        # slow poll misses keystrokes.  Measured 260 us against a 40 ms frame.
+        pressed = win32.key_pressed_since()
+        self.avoid.update(typing=pressed, tick_ms=tick_ms)
+
+        if not self.avoid.typing or not self.avoid.rects:
+            # 用户停手了：区已经消失，方向也该解除，下次进区才重新选边。
+            # The user stopped: the zone is gone, so drop the pinned direction
+            # too — the next entry picks a side afresh.
+            self._clear_avoid_dirs()
+            return
+
+        for m in self.mascots:
+            # 用**身体矩形相交**而不是「锚点在区内」。锚点是精灵的基准点，
+            # 位置偏下（图集基准坐标常见 64,128），只判锚点会让宠物看起来已经
+            # 压在输入框上、判定却说它在区外。见 `_mascot_box`。
+            # Overlap the whole body rect, not just the anchor: the anchor is
+            # the sprite's baseline (often 64,128 here), so an anchor-only test
+            # reports "outside" while the pet is visibly on top. See `_mascot_box`.
+            left, top, right, bottom = self._mascot_box(m)
+            if not self.avoid.contains_rect(left, top, right, bottom):
+                # 已经跑出去了：解除方向与「在区内」标记，下次再进来才重新选边。
+                # It got clear: drop both the direction and the inside flag so a
+                # later entry picks a fresh side.
+                if getattr(m, "_avoid_in", False):
+                    m._avoid_in = False
+                    m._avoid_dir = 0
+                continue
+            name = self._avoid_run_behavior(m)
+            if name is None:
+                continue
+            # ⭐ **方向只在「从区外进入区内」的那一刻定一次**，跑的过程中不改。
+            # 每帧重算会让逃跑方向抖动：跑出中心后 `escape_direction` 的结果
+            # 会随位置来回翻转，宠物在区里折返，看起来像抽搐而不是逃跑。
+            # 而「首次进入」也不对 —— 宠物跑出去又被别的东西推进来时，
+            # 应该按它**这一次**的位置重新选边，而不是沿用上次的。
+            # 所以判据是「这一帧在区内、上一帧在区外」（见下面的 `_avoid_in`）。
+            # Pin the direction for the duration of one entry: recomputing every
+            # tick makes the pet oscillate around the centre, while pinning only
+            # on the *first* entry keeps a stale side after the pet leaves and
+            # is pushed back in.  Re-pinning is keyed on "inside now, outside
+            # last frame" instead.
+            if not getattr(m, "_avoid_in", False):
+                m._avoid_dir = self.avoid.escape_direction(m.anchor.x, m.anchor.y)
+            m._avoid_in = True
+            dir_hint = m._avoid_dir or 1
+            m.set_look_right(dir_hint > 0)
+            # 打断当前动作：正蹲在输入框上不动的话，等它自己跑完当前动作才
+            # 排队，会让它在用户打字期间一直杵在那里。
+            self._force_behavior(m, name, interrupt=True)
+
+    def _clear_avoid_dirs(self):
+        """宠物离开回避区（或功能关闭）时清掉已定的逃跑方向。/ Clear pinned flee dirs."""
+        for m in self.mascots:
+            if getattr(m, "_avoid_in", False) or getattr(m, "_avoid_dir", 0):
+                m._avoid_in = False
+                m._avoid_dir = 0
 
     # ------------------------------------------------------------------
     # 行为队列 / behaviour queue

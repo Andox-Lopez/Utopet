@@ -122,6 +122,7 @@ resident **in the tray**, and Tray menu → "Show taskbar panel" brings it back.
 | **会话恢复**：记住上次退出时养了几只、站在哪、分别是什么角色，并**接着做刚才那件事**（连已经跑到的帧数一起恢复；只对同一个行为生效） | **Session restore**: remembers how many mascots you had, where they stood and which character each was — and **continues the activity they were doing**, down to the frame count (only when the same behaviour is chosen) |
 | **开机自启**：勾选即写 `HKCU\...\Run`，打包版指向 exe 自己、源码版用 `pythonw.exe` | **Launch at login**: writes `HKCU\...\Run`; the packaged build points at the exe itself, the source build uses `pythonw.exe` |
 | **气泡台词**：宠物随机在头顶冒出一句话（原版 Serifu）。台词优先取角色包里的 `conf\serifu.txt`，其次是你的台词库，最后是内置默认；原版包里名为「セリフ」的行为、番茄钟阶段切换都会触发。气泡不吃鼠标点击、不抢焦点，并跟着宠物走 | **Speech balloons**: the pets say a random line above their heads (the original's Serifu). Lines come from the pack's `conf\serifu.txt` first, then your own list, then built-ins; the original's "serifu" behaviour and every Pomodoro transition trigger one. Balloons ignore clicks, never steal focus, and follow the pet |
+| **输入回避**（设置 → 行为）：检测到你在打字时，压在输入区上的宠物会主动跑开，直到离开那块区域；输入法候选窗弹出来时也算进去。只在宠物已经压到时才干预，桌面上没有宠物在打字区附近时等于不存在 | **Input avoidance** (Settings → Behaviour): while it detects you typing, a pet sitting on the typing area runs away until it is clear; an open IME candidate window counts as part of the area. Only pets already inside are touched, so with none nearby the feature does nothing |
 | **角色库管理**（设置 → 角色）：列出全部已装角色的名称/图片数/来源/状态，可停用（只是从选择器里藏起来，不动文件）或删除（权限不足时给出完整路径，不假装成功） | **Character library** (Settings → Characters): every installed pack with its image count, source and state; disable it (hidden from the pickers, nothing deleted) or delete it (on a permission error you get the exact path, never a fake success) |
 | **番茄时钟**：25 分钟工作 + 5 分钟休息、每 4 轮一次长休息，阶段自动衔接并用系统通知提醒；面板与托盘两处入口，窗口关闭计时继续，打开时**居中到鼠标所在屏幕**；休息开始时宠物会做个动作；窗口里显示「今日 N 个 · X 小时 Y 分」与连续天数 | **Pomodoro timer**: 25 min work + 5 min break, a long break every 4 rounds, chained automatically with a system notification per transition; entries in the panel and the tray, the clock keeps running when the window closes, and opening **centres it on the screen under the cursor**; the mascot reacts when a break starts; the window shows today's count, focus time and streak |
 | **角色包一键导入 / 导出**：zip 直接拖进设置窗口就能装（自动识别标准包 / 原版平铺 / 多套一层目录三种布局），缺 `Actions.xml`/`Behavior.xml`/`Mascot.xsd` 时用内置原版模板补齐且**只填不改**；导出成 zip 带同样的补齐 | **One-click character-pack import / export**: drag a zip onto Settings to install (three layouts auto-detected); missing `Actions.xml`/`Behavior.xml`/`Mascot.xsd` are filled from built-in original templates, **add-only, never overwritten**; export produces a zip with the same filling |
@@ -142,7 +143,7 @@ E:\shimejee-remake\
 ├── 启动桌宠.bat                 双击启动 / double-click launcher
 ├── requirements.txt
 ├── shimeji\
-│   ├── win32.py                 ctypes 窗口接口 / native window helpers
+│   ├── win32.py                 ctypes 窗口接口 + 输入状态探测 / native windows + input probes
 │   ├── icons.py                 Logo 加载 / logo loader (ico → png fallback)
 │   ├── i18n.py  locales\        三语 UI / three-language UI
 │   ├── names.py                 91 动作名的中英对照 / action-name dictionary
@@ -163,6 +164,7 @@ E:\shimejee-remake\
 │   │   ├── builtin.py           11 种内建动作 / built-in actions
 │   │   ├── petstate.py          CalMode 养成状态 / CalMode pet state
 │   │   ├── brain.py             行为选择 / behaviour selection
+│   │   ├── avoid.py             输入回避区（无 Qt）/ typing-avoidance zones (Qt-free)
 │   │   └── manager.py           托盘·面板·多宠物·主循环 / tray, panel, lifecycle
 │   └── gui\                     设置窗口 · 动作编辑器 · 任务栏面板 · 番茄钟 · 气泡
 │                                settings & editor & taskbar panel & widgets
@@ -209,6 +211,20 @@ so any original character pack can be dropped into `characters\`.
 
 ## 已知限制 / Known limitations
 
+- **「输入回避」避的是「光标附近」，不是「输入框附近」。** Windows 不告诉任何
+  外部程序「你的输入框在哪」：浏览器、VS Code 这类应用自己绘制光标，不提供
+  系统 caret（实测 Firefox 下 67 次采样拿到的光标矩形**全部为空**，Chrome 同样）。
+  所以在你常用的浏览器里，如果输入框不在光标附近，宠物躲的位置会有偏差。
+  记事本、Office 这类传统 Windows 控件能提供精确位置，程序会自动切到精确模式。
+  设置 → 行为 里可以关掉它或调整回避区大小。
+  **Input avoidance zones the area around the *cursor*, not around the input
+  box.**  Windows does not tell outside programs where the input box is; modern
+  apps draw their own caret.  Classic Win32 controls (Notepad, Office) do report
+  it, and the app switches to exact mode for those.
+- **按住 Shift / Ctrl 不放时可能不被算作「正在输入」**（键盘活动是逐虚拟键判定的，
+  实测本机 Alt 能读到、Shift/Ctrl 读不到）。正常打字总能被检出。
+  Held modifiers may not register as typing on some machines; ordinary typing
+  always does.
 - **鼠标空闲聚集默认关闭**（可在 设置 → 行为 里打开）。1.0.9 起它已经能正常
   进出了：聚过去之后鼠标一动就散开，或者超过「最长聚集时间」自动散开。
   默认关闭只是不想替老用户改主意。

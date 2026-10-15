@@ -33,6 +33,7 @@ __all__ = [
     "list_windows", "window_at", "move_window", "get_window_title",
     "enum_monitors", "set_dpi_scale", "dpi_scale", "is_zoomed",
     "set_app_user_model_id", "APP_ID", "make_taskbar_window", "window_rect",
+    "get_input_caret_rect", "visible_ime_rects", "key_pressed_since",
 ]
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -55,6 +56,150 @@ MONITOR_DEFAULTTOPRIMARY = 1
 
 #: 物理像素 -> 逻辑像素 的除数 / physical -> logical divisor
 _dpi_scale = 1.0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 输入状态探测 / Input-state probing
+# ══════════════════════════════════════════════════════════════════════════
+# 用途：用户正在打字时，宠物不该跑到输入框和输入法候选窗上压着。
+#
+# ⭐ 实测结论（本机逐条验过，别再重复推��）：
+#   · `rcCaret`（精确光标矩形）在 **Firefox 67 次采样全 0**、Chrome 全 0。
+#     原因：现代应用（Chromium / Electron / Gecko）**自己画光标**，不用系统
+#     caret。只有记事本、Office 这类传统 Win32 控件才提供。
+#   · `ImmGetContext(前台窗口)` 在现代应用下返回 0，拿不到输入法上下文。
+#   · 枚举 `IME*` / `MSCTFIME UI` 窗口：系统里常驻 131 个，但平时**全部
+#     `visible=0` 且矩形为空**，只有真正激活输入法时才有可用的。
+#   · `GetCursorPos` **零依赖永远可用** —— 这是唯一能在所有应用上工作的锚点。
+#   · `GetAsyncKeyState` 可用（实测注入 F12 能读到低位），但**逐键点名不可靠**，
+#     所以这里扫全键空间而不是列一张「打字键位表」。
+#   · ⛔ `GetLastInputInfo` **不区分键鼠**：用户动一下鼠标它就归零。用它判
+#     「正在打字」会导致宠物因鼠标移动而无缘无故躲开。
+#
+# So the exact caret rect is *not* available on modern apps; the cursor position
+# is the only universally reliable anchor, and keyboard activity is the only
+# usable "is the user typing" signal.
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", _RECT),
+    ]
+
+
+#: `IME*` / `MSCTFIME UI` 窗口类前缀。输入法候选窗和组合串窗都是独立顶层窗口，
+#: 可见时能被枚举到 —— 这是「输入法激活」唯一能直接读到的信号。
+#: The IME candidate / composition windows are separate top-level windows, so
+#: enumerating them is the one direct signal for "an IME is showing".
+_IME_CLASS_PREFIXES = ("IME",)
+_IME_CLASS_EXACT = frozenset(("MSCTFIME UI", "Default IME"))
+
+
+def get_input_caret_rect() -> tuple[int, int, int, int] | None:
+    """输入光标矩形（屏幕坐标），拿不到返回 ``None``。
+
+    精确信息，只在**传统 Win32 文本控件**下有效（记事本、Office、Delphi…）。
+    Firefox / Chrome / VS Code 一律返回 `None` —— 它们自己画光标，不提供
+    系统 caret。调用方**必须**有回退路径。
+    The exact caret rect, in screen coordinates, or None.
+
+    Only available for classic Win32 text controls.  Browsers and Electron apps
+    draw their own caret and report nothing, so callers must have a fallback.
+    """
+    info = _GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+    if not _user32.GetGUIThreadInfo(0, ctypes.byref(info)):
+        return None
+    if not info.hwndCaret:
+        return None
+    rc = info.rcCaret
+    # rcCaret 恒为 0 就是「没有真光标」的信号，与 hwndCaret 缺失互相印证。
+    if rc.right - rc.left <= 0 or rc.bottom - rc.top <= 0:
+        return None
+    # rcCaret 是**客户区坐标**，必须转屏幕坐标才能和光标位置比较。
+    # rcCaret is in client coordinates; screen space is what the engine speaks.
+    top_left = wintypes.POINT(rc.left, rc.top)
+    bottom_right = wintypes.POINT(rc.right, rc.bottom)
+    if not _user32.ClientToScreen(info.hwndCaret, ctypes.byref(top_left)):
+        return None
+    if not _user32.ClientToScreen(info.hwndCaret, ctypes.byref(bottom_right)):
+        return None
+    return (_l(top_left.x), _l(top_left.y),
+            _l(bottom_right.x), _l(bottom_right.y))
+
+
+def visible_ime_rects() -> list[tuple[int, int, int, int]]:
+    """**可见且矩形非空**的输入法窗口 / Visible, non-empty IME windows.
+
+    平时返回空列表（系统里那 130 来个 IME 辅助窗口全都不可见），只有输入法
+    真的被激活、候选窗弹出来时才有值。用来在「正在选字」时把宠物赶得更远。
+
+    ⭐ **实测耗时 1.35ms**（枚举全部顶层窗口），是本模块最贵的调用。相对 40ms
+    的帧长占 3.4%，可以每帧调，但**更划算的做法是只在检测到键盘活动时调** ——
+    IME 被激活必然伴随键盘输入，这个前置条件是可靠的。
+    Normally empty; populated only while an IME candidate window is up.
+
+    Measured at 1.35 ms — the most expensive call here.  Call it only after
+    keyboard activity is detected: an IME can only be up if the user typed.
+    """
+    out: list[tuple[int, int, int, int]] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    def _cb(hwnd, _lparam):
+        buf = ctypes.create_unicode_buffer(256)
+        _user32.GetClassNameW(hwnd, buf, 256)
+        cls_name = buf.value
+        if not (cls_name.startswith(_IME_CLASS_PREFIXES)
+                or cls_name in _IME_CLASS_EXACT):
+            return True
+        if not _user32.IsWindowVisible(hwnd):
+            return True
+        r = _RECT()
+        if not _user32.GetWindowRect(hwnd, ctypes.byref(r)):
+            return True
+        if r.right - r.left <= 0 or r.bottom - r.top <= 0:
+            return True
+        out.append((_l(r.left), _l(r.top), _l(r.right), _l(r.bottom)))
+        return True
+
+    _user32.EnumWindows(_cb, 0)
+    return out
+
+
+def key_pressed_since() -> bool:
+    """自**上次调用**以来，是否有任意键盘输入。/ Any keyboard input since the last call.
+
+    ⭐ 靠 `GetAsyncKeyState` 的**低位**（bit 0）：Windows 规定「自上次调用以来
+    该键被按过」置位，且读取即清零。所以这个函数**只能按固定节奏轮询**，
+    调用太稀会漏、调用太频没有额外代价。
+    ⛔ 绝不能用 `GetLastInputInfo`：它不区分键鼠，用户动一下鼠标就归零。
+    ⛔ 扫描范围是**全部 256 个虚拟键码**而不是「打字键位表」：实测逐键点名极
+    不可靠（按住 Shift/Ctrl 常常读不到，只有 Alt 能复现），扫全空间就没这个
+    问题。代价是 256 次 ctypes 调用，约 20µs，相对每帧 40ms 完全可忽略。
+
+    Uses bit 0 of `GetAsyncKeyState`, which Windows clears on read — hence
+    "poll at a fixed cadence".  Scans all 256 virtual-key codes rather than a
+    "typing keys" table: measured, a hand-written table misses most keys.
+    """
+    get = _user32.GetAsyncKeyState
+    for vk in range(1, 256):
+        if get(vk) & 0x0001:
+            return True
+    return False
+
 
 
 def set_dpi_scale(value: float):

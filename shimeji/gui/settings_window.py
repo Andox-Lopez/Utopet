@@ -530,6 +530,43 @@ class SettingsWindow(QWidget):
         g.layout().addRow(hint_idle)
         v.addWidget(g)
 
+        # ── 输入回避（1.0.10）──────────────────────────────────────────
+        # 放在行为页而不是高级页：它决定宠物**做什么动作**（跑开），和「鼠标
+        # 静止聚集」是同一类东西，用户找它时会点同一个页签。
+        # Lives on the Behaviour page, not Advanced: it decides what the pet
+        # *does* (run away), same class of setting as idle-gather.
+        g3 = self._group(t.t("grp.avoid_input"))
+        self.avoid = QCheckBox(t.t("lbl.avoid_input"))
+        self.avoid.setChecked(bool(self.settings.get("avoid_input", True)))
+        g3.layout().addRow("", self.avoid)
+
+        # 回避区大小给一个 spin 就够：宽高按 210:80 的比例联动，暴露两个
+        # 独立 spin 会让人以为要自己算比例。
+        # One spin for the size: width and height follow the 210:80 ratio.  Two
+        # spinners would imply the user has to work the ratio out themselves.
+        self.avoid_margin = QSpinBox()
+        self.avoid_margin.setRange(0, 800)
+        self.avoid_margin.setValue(
+            int(self.settings.get("avoid_input_margin_x", 210)))
+        self.avoid_margin.setSuffix(" px")
+        g3.layout().addRow(t.t("lbl.avoid_margin"), self.avoid_margin)
+
+        self.avoid_typing = QSpinBox()
+        self.avoid_typing.setRange(0, 30)
+        # ⚠️ 单位是**秒**，存的是毫秒 —— 换算必须除 1000 而不是 100，
+        # 否则 1500ms 会显示成 15 秒（放大 10 倍，用户以为要等 15 秒）。
+        # The unit is seconds while the stored value is milliseconds: divide by
+        # 1000, not 100, or the 1500 ms default shows as a 15-second wait.
+        self.avoid_typing.setValue(
+            int(self.settings.get("avoid_input_typing_ms", 1500)) // 1000)
+        self.avoid_typing.setSuffix(" s")
+        g3.layout().addRow(t.t("lbl.avoid_typing"), self.avoid_typing)
+
+        hint_avoid = QLabel(t.t("hint.avoid_input"))
+        hint_avoid.setWordWrap(True)
+        g3.layout().addRow(hint_avoid)
+        v.addWidget(g3)
+
         # 逐条微调行为频次 / tune each behaviour individually
         g2 = self._group(t.t("grp.behavior_tuning"))
         self.behavior_table = QTableWidget(0, 6)
@@ -1321,6 +1358,13 @@ class SettingsWindow(QWidget):
         s.set("idle_gather", self.idle.isChecked())
         s.set("idle_gather_sec", self.idle_spin.value())
         s.set("idle_gather_max_sec", self.idle_max_spin.value())
+        # 1.0.10：宽高按 210:80 联动，跟 UI 上那个「回避区大小」spin 对应。
+        # Width and height follow the 210:80 ratio behind the single spinner.
+        _ax = self.avoid_margin.value()
+        s.set("avoid_input", self.avoid.isChecked())
+        s.set("avoid_input_margin_x", _ax)
+        s.set("avoid_input_margin_y", max(0, int(round(_ax * 80 / 210.0))))
+        s.set("avoid_input_typing_ms", self.avoid_typing.value() * 1000)
         s.set("titles", [x.strip() for x in self.titles_edit.toPlainText().splitlines()
                          if x.strip()])
         s.set("window_offset", [sp.value() for sp in self.off_spins])

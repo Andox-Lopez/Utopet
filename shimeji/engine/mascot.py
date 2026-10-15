@@ -188,6 +188,16 @@ class Mascot(QWidget):
         #: is already holding the mascot and any delay feels broken.
         self.pending_behaviors: list[str] = []
 
+        #: 1.0.10 输入回避：**进入**回避区时定下的逃跑方向（-1 左 / +1 右 / 0 未定）
+        #: 与「上一帧是否还在区内」。两者一起用：每帧重算方向会折返，而只在
+        #: 首次进入时定会让宠物出去再被推进来时沿用上次的边。判据是
+        #: 「这一帧在区内、上一帧在区外」。
+        #: Pinned flee direction plus "was inside last frame".  Recomputing every
+        #: tick makes the pet double back; pinning only on the first entry keeps
+        #: a stale side once the pet leaves and is pushed back in.
+        self._avoid_dir = 0
+        self._avoid_in = False
+
         #: 会话恢复用：上次退出时正在播放的行为名与已经跑了多少帧。
         #: 下一个动作创建时会**只对同名行为**生效（见 `Manager._tick_mascot`）：
         #: 存档里的行为在新角色表里不存在时，行为选择会自动退回到正常随机，

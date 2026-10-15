@@ -122,6 +122,26 @@ DEFAULTS = {
     # the pet sits there watching the cursor forever, even after the user comes
     # back — the very reason this feature shipped disabled.
     "idle_gather_max_sec": 60,
+    # ── 输入回避（1.0.10）────────────────────────────────────────────
+    # 用户打字时，宠物不该跑到输入框/输入法候选窗上压着。
+    # ⚠️ 精确的「输入框位置」在现代应用里**拿不到**（Firefox 实测 67 次采样
+    # 全 0、Chrome 全 0）—— 它们自己画光标，不提供系统 caret。所以这里的
+    # 语义是「光标附近」，不是「输入框附近」；输入框不在光标处时会偏。
+    # Keep the pet off the cursor while the user types.
+    # The *exact* input-box rect is unavailable on modern apps (measured: 67/67
+    # samples zero in Firefox, all zero in Chrome) because they draw their own
+    # caret.  So this means "near the cursor", not "near the input box".
+    "avoid_input": True,
+    # 回避区的半宽 / 半高（逻辑像素）。默认 210×80 —— 覆盖一行输入框加候选窗。
+    # Half-width/half-height of the zone; 210x80 covers one input line plus an
+    # IME candidate list.
+    "avoid_input_margin_x": 210,
+    "avoid_input_margin_y": 80,
+    # 键盘活动后维持「正在输入」多久（毫秒）。1.5 秒：短了会在打字过程中反复
+    # 退出（宠物一停下就回来），长了会让用户打完字后宠物还躲着。
+    # How long keyboard activity keeps the zone alive.  1.5 s: shorter makes the
+    # pet drift back mid-typing, longer leaves it hiding after you're done.
+    "avoid_input_typing_ms": 1500,
     # 窗口 / windows
     "titles": [],                     # 窗口标题过滤 / window title filter
     "window_offset": [0, 0, 0, 0],    # X / Y / 宽 / 高 偏移 / rect offsets

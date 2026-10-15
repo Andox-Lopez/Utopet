@@ -10,6 +10,7 @@ that the fix holds.
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import sys
@@ -2088,6 +2089,351 @@ def main() -> int:
           str(_DEF9.get("idle_gather_max_sec")))
     check(_DEF9.get("idle_gather") is False,
           "idle_gather 仍然默认关闭（不替老用户改主意）")
+
+    # ------------------------------------------------------------------
+    section("1.0.10 输入回避：用户打字时宠物让开")
+    from shimeji.engine.avoid import (AvoidZones as _AZ,
+                                      DEFAULT_MARGIN_X as _DMX,
+                                      DEFAULT_MARGIN_Y as _DMY,
+                                      DEFAULT_TYPING_WINDOW_MS as _DTW)
+    from shimeji.engine.manager import BEHAVIOR_RUN_AWAY as _BRA
+
+    # ── A. 键盘活动的时间窗 ──────────────────────────────────────────
+    _az1 = _AZ()
+    _now1 = [1000]
+    _az1.set_clock(lambda: _now1[0])
+    _az1.update(typing=True)
+    check(_az1.typing and _az1.rects,
+          "有键盘活动时生成回避区", "typing=%s rects=%s"
+          % (_az1.typing, _az1.rects))
+    check(_az1.source in ("caret", "cursor"),
+          "记录了回避区来源（A 路精确 / B 路光标）", _az1.source)
+    # 超时后必须自己消退，否则用户打完字宠物还一直躲着
+    _now1[0] += _DTW + 1
+    _az1.update()
+    check(not _az1.typing and not _az1.rects,
+          "超过时间窗后回避区自动消退",
+          "typing=%s rects=%s" % (_az1.typing, _az1.rects))
+    # 刚好卡在窗口内
+    _now1[0] += _DTW - (_DTW + 1)
+    _az1.feed_keyboard(True)
+    _az1.update()
+    check(_az1.typing, "恰好等于时间窗时仍然算「正在输入」")
+
+    # ── B. 判定用的是身体矩形，不是锚点 ──────────────────────────────
+    _az2 = _AZ()
+    _now2 = [5000]
+    _az2.set_clock(lambda: _now2[0])
+    _az2.feed_keyboard(True)
+    _az2.update()
+    check(len(_az2.rects) == 1, "生成一块回避区", str(_az2.rects))
+    _l2, _t2, _r2, _b2 = _az2.rects[0]
+    check(_r2 - _l2 == _DMX * 2 and _b2 - _t2 == _DMY * 2,
+          "回避区大小 = 2×半宽 / 2×半高",
+          "%dx%d" % (_r2 - _l2, _b2 - _t2))
+    # 角上接触不算相交（否则宠物擦边就触发，会显得神经质）
+    check(not _az2.contains_rect(_r2, _t2, _r2 + 30, _t2 + 30),
+          "只有角接触不算压到（半开区间）")
+    check(_az2.contains_rect(_l2 + 1, _t2 + 1, _r2 - 1, _b2 - 1),
+          "真的重叠算压到")
+    # 相交判定必须比「中心点在区内」更宽容
+    check(_az2.contains_rect(_r2 - 2, _t2, _r2 + 200, _t2 + 200),
+          "身体一小部分伸进去就算压到（否则看起来还压着输入框）")
+
+    # ── C. 逃跑方向 ─────────────────────────────────────────────────
+    _az3 = _AZ()
+    _az3.set_clock(lambda: 6000)
+    _az3.feed_keyboard(True)
+    _az3.update()
+    _l3, _t3, _r3, _b3 = _az3.rects[0]
+    _cx3 = (_l3 + _r3) // 2
+    check(_az3.escape_direction(_cx3 - 30, _t3) < 0,
+          "在回避区左半边 → 往左逃")
+    check(_az3.escape_direction(_cx3 + 30, _t3) > 0,
+          "在回避区右半边 → 往右逃")
+    _az3.rects = []
+    check(_az3.escape_direction(0, 0) == -1,
+          "没有回避区时方向判定不炸")
+
+    # ── D. 关掉开关就不回避 ─────────────────────────────────────────
+    _az4 = _AZ(enabled=False)
+    _az4.set_clock(lambda: 7000)
+    _az4.feed_keyboard(True)
+    _az4.update(typing=True)
+    check(not _az4.rects and not _az4.typing,
+          "关闭时即使有键盘活动也不生成回避区")
+
+    # ── E. 端到端：宠物被真的逼着跑，且方向正确 ─────────────────────
+    _d10 = _tempfile.mkdtemp(prefix="utopet_avoid_")
+    try:
+        _s10 = _S3(os.path.join(_d10, "settings.json"))
+        _s10.set("character", "Miku")
+        _s10.set("taskbar_panel", False)
+        _s10.set("initial_count", 1)
+        _s10.set("avoid_input", True)
+        _m10 = Manager(app, _s10)
+        _m10.timer.stop()
+        _m10.dismiss_all()
+        _wa10 = _m10.shared_env.work_area
+        check(_m10.avoid.enabled, "Manager 建好后回避功能是开的")
+
+        # 手动造一个回避区：不去真的按键盘（本机已实测注入按键不可靠，
+        # 而 `feed_keyboard` 就是为测试留的入口）。
+        _bx10 = (_wa10.left + 400, _wa10.top + 300,
+                 _wa10.left + 900, _wa10.top + 500)
+        _m10.avoid.feed_keyboard(True)
+        _m10.avoid.rects = [_bx10]
+        _m10.avoid.typing = True
+        _pet10 = _m10.summon(Pt((_bx10[0] + _bx10[2]) // 2,
+                                (_bx10[1] + _bx10[3]) // 2))
+        check(_pet10 is not None, "在回避区里召唤一只宠物")
+
+        # 接管 `update`：`tick()` 里它会用**真实时钟**判定 typing，测试等
+        # 不到「用户真的在打字」；而且它按**真实光标位置**重算 rects，会覆盖
+        # 掉上面手工摆的 `_bx10`。这里固定成「永远有键盘活动 + 区永远是那一块」，
+        # 等价于用户一直在那一处打字，逐帧判定这条路径能被稳定走到。
+        # Take over `update`: inside `tick()` it ages the state against the
+        # real clock and recomputes the rects from the real cursor, both of
+        # which a test cannot control.  Pin it to "always typing, always this
+        # zone" -- equivalent to the user typing in one spot forever.
+        def _fake_update(typing=False, tick_ms=40):
+            _m10.avoid.feed_keyboard(True)
+            _m10.avoid.typing = True
+            _m10.avoid.source = "cursor"
+            _m10.avoid.rects = [_bx10]
+
+        _m10.avoid.update = _fake_update
+
+        # 先跑几帧，让宠物拿到图片和一个真实动作 —— `summon` 之后它还没有
+        # 任何图，`_mascot_box` 会退化成用基准坐标当尺寸下界，那测的是兜底
+        # 路径而不是日常路径。
+        for _ in range(20):
+            _m10.tick()
+
+        _m10._check_input_avoid()
+        check(_pet10.pending_behaviors and
+              _pet10.pending_behaviors[0] == _BRA,
+              "压在输入区上的宠物被强制切成「跑」",
+              str(_pet10.pending_behaviors))
+        _zone_cx = (_bx10[0] + _bx10[2]) // 2
+        _zone_cy = (_bx10[1] + _bx10[3]) // 2
+        # 断言方向时把宠物放到**明确偏一侧**的位置：正蹲在区中心时
+        # `escape_direction` 用的是严格 `<`，任选一侧都算对，不该挑边。
+        # 每次换边之前都先让它真的离开区（`_avoid_in` 才会清）—— 这正是
+        # 实现里的判据：「这一帧在区内、上一帧在区外」才重新选边。
+        # Put it clearly on one side, and let it actually leave the zone before
+        # switching sides: the implementation re-picks the direction exactly
+        # when it re-enters, so a teleport inside the zone keeps the old side.
+        _out10 = Pt(_zone_cx + _DMX + 400, _zone_cy)
+
+        _pet10.anchor = Pt(_zone_cx + 120, _zone_cy)
+        _pet10.pending_behaviors = []
+        _pet10._avoid_in = False
+        _m10._check_input_avoid()
+        check(_pet10.look_right is True,
+              "在回避区右半边 → 朝右跑（远离中心）",
+              "look_right=%s" % _pet10.look_right)
+
+        _pet10.anchor = _out10
+        _m10._check_input_avoid()          # 先出区
+        _pet10.anchor = Pt(_zone_cx - 120, _zone_cy)
+        _pet10.pending_behaviors = []
+        _m10._check_input_avoid()          # 再从左侧进区
+        check(_pet10.look_right is False,
+              "离开后从左侧重新进区 → 改成朝左跑（按新位置选边）",
+              "look_right=%s" % _pet10.look_right)
+
+        # 放回中央继续跑
+        _pet10.anchor = Pt(_zone_cx, _zone_cy)
+
+        # 让它真的跑起来。判据是**每一帧的位移都朝着远离中心的方向** ——
+        # 不能只看 60 帧后的净位移：宠物跑出区、又从另一侧被别的东西推进来
+        # 时会重新选边，净位移就不自洽了（而那本来是正确的行为）。
+        # Per-frame invariant rather than net displacement over 60 frames: once
+        # the pet leaves and is pushed back in it re-picks a side, so the net
+        # displacement stops being self-consistent — and that is correct
+        # behaviour, not a regression.
+        _wrong = 0
+        _steps = 0
+        _pet10.anchor = Pt(_zone_cx + 120, _zone_cy)
+        _pet10._avoid_in = False
+        for _ in range(60):
+            _prev = float(_pet10.anchor.x)
+            _pet10.action = None
+            _pet10.pending_behaviors = [_BRA]
+            _m10._check_input_avoid()
+            _m10.tick()
+            _dx = float(_pet10.anchor.x) - _prev
+            if abs(_dx) < 0.01:
+                continue
+            _steps += 1
+            # 位移方向必须与「当前朝向」一致：look_right=True → dx > 0。
+            if (_dx > 0) != bool(_pet10.look_right):
+                _wrong += 1
+        check(_steps > 0, "逃跑过程中确实产生了位移",
+              "steps=%d" % _steps)
+        check(_wrong == 0,
+              "每一帧的位移方向都与朝向一致（逃跑不折返、不抽搐）",
+              "错向 %d/%d 帧" % (_wrong, _steps))
+
+        # 区外的宠物不受影响
+        _far10 = _m10.summon(Pt(_wa10.right - 60, _wa10.bottom))
+        _far10.pending_behaviors = []
+        _m10._check_input_avoid()
+        check(_far10.pending_behaviors == [],
+              "不在回避区的宠物不会被强制跑",
+              str(_far10.pending_behaviors))
+
+        # 跑完/离开区之后不再干预
+        _pet10.pending_behaviors = []
+        _pet10.anchor = Pt(_wa10.right - 80, _wa10.bottom)
+        _m10._check_input_avoid()
+        check(_pet10.pending_behaviors == [],
+              "已经离开回避区的宠物恢复自由",
+              str(_pet10.pending_behaviors))
+
+        # 关掉开关：即使在区里也不跑
+        _m10.avoid.enabled = False
+        _pet10.pending_behaviors = []
+        _pet10.anchor = Pt((_bx10[0] + _bx10[2]) // 2,
+                           (_bx10[1] + _bx10[3]) // 2)
+        _m10._check_input_avoid()
+        check(_pet10.pending_behaviors == [],
+              "关掉开关后区内的宠物也不再被逼着跑",
+              str(_pet10.pending_behaviors))
+        check(not _m10.avoid.rects,
+              "关掉开关时上帧的回避区也被清掉（不会残留）")
+        _m10.quit()
+    finally:
+        _shutil.rmtree(_d10, ignore_errors=True)
+
+    # ── F. 三个内置角色包都有「跑开」这条行为 ───────────────────────
+    for _ch10 in ("Miku", "Ayaka", "花卷"):
+        _cd10 = os.path.join(ROOT, "characters", _ch10, "conf")
+        _bp10 = os.path.join(_cd10, "Behavior.xml")
+        _ap10 = os.path.join(_cd10, "Actions.xml")
+        if not (os.path.exists(_bp10) and os.path.exists(_ap10)):
+            continue
+        _bt10 = io.open(_bp10, encoding="utf-8-sig").read()
+        _at10 = io.open(_ap10, encoding="utf-8-sig").read()
+        check('名前="%s"' % _BRA in _bt10,
+              "%s 的 Behavior.xml 里有「跑开」行为" % _ch10)
+        check('名前="%s"' % _BRA in _at10,
+              "%s 的 Actions.xml 里有对应的动作" % _ch10)
+
+    # ── G. 找不到行为时安静降级，不把宠物僵住 ───────────────────────
+    class _NoRunBundle:
+        """假装是这只宠物的 bundle，但里面没有「跑开」这条行为。
+
+        `label` 必须有：`save_session` 会读 `m.bundle.label`，缺了会在
+        `quit()` 里抛 AttributeError，把这个测试的失败原因糊掉。
+        """
+        label = "test-no-run"
+        actions = {}
+
+        def behavior_by_name(self, name):
+            return None
+
+    _d10b = _tempfile.mkdtemp(prefix="utopet_avoid2_")
+    try:
+        _s10b = _S3(os.path.join(_d10b, "settings.json"))
+        _s10b.set("character", "Miku")
+        _s10b.set("taskbar_panel", False)
+        _s10b.set("initial_count", 1)
+        _m10b = Manager(app, _s10b)
+        _m10b.timer.stop()
+        _m10b.dismiss_all()
+        _wa10b = _m10b.shared_env.work_area
+        _pet10b = _m10b.summon(Pt(_wa10b.left + 300, _wa10b.bottom))
+        _pet10b.bundle = _NoRunBundle()
+        check(_m10b._avoid_run_behavior(_pet10b) is None,
+              "角色包没有「跑开」行为时返回 None（而不是塞个不存在的名字）")
+        _m10b.avoid.rects = [(_wa10b.left, _wa10b.top,
+                              _wa10b.right, _wa10b.bottom)]
+        _m10b.avoid.typing = True
+        _pet10b.pending_behaviors = []
+        _m10b._check_input_avoid()
+        check(_pet10b.pending_behaviors == [],
+              "找不到逃跑行为时安静跳过（宠物不被僵住）",
+              str(_pet10b.pending_behaviors))
+        _m10b.quit()
+    finally:
+        _shutil.rmtree(_d10b, ignore_errors=True)
+
+    # ── H. 设置项默认值 ─────────────────────────────────────────────
+    from shimeji.settings import DEFAULTS as _DEF10
+    check(_DEF10.get("avoid_input") is True, "avoid_input 默认开")
+    check(_DEF10.get("avoid_input_margin_x") == _DMX
+          and _DEF10.get("avoid_input_margin_y") == _DMY,
+          "回避区默认 %dx%d（半宽/半高 %dx%d）"
+          % (_DEF10.get("avoid_input_margin_x") * 2,
+             _DEF10.get("avoid_input_margin_y") * 2, _DMX, _DMY))
+    check(_DEF10.get("avoid_input_typing_ms") == _DTW,
+          "键盘活动时间窗默认 %d ms" % _DTW)
+
+    # 三语文案
+    import json as _json10
+    for _loc10 in ("zh_CN", "en_US", "ja_JP"):
+        _lp10 = os.path.join(ROOT, "shimeji", "locales", "%s.json" % _loc10)
+        _ld10 = _json10.load(open(_lp10, encoding="utf-8"))
+        _miss10 = [k for k in ("grp.avoid_input", "lbl.avoid_input",
+                               "lbl.avoid_margin", "lbl.avoid_typing",
+                               "hint.avoid_input")
+                   if not _ld10.get(k)]
+        check(not _miss10, "%s 有 1.0.10 的全部新文案" % _loc10, str(_miss10))
+
+    # 设置窗口：控件读到了值、保存能写回去、且宽高按比例联动
+    _d10c = _tempfile.mkdtemp(prefix="utopet_avoidui_")
+    try:
+        from shimeji.gui.settings_window import SettingsWindow as _SW10
+        _s10c = _S3(os.path.join(_d10c, "settings.json"))
+        _s10c.set("character", "Miku")
+        _s10c.set("taskbar_panel", False)
+        _s10c.set("initial_count", 1)
+        _s10c.set("avoid_input", True)
+        _s10c.set("avoid_input_margin_x", 300)
+        _s10c.set("avoid_input_margin_y", 114)
+        _s10c.set("avoid_input_typing_ms", 2500)
+        _m10c = Manager(app, _s10c)
+        _m10c.timer.stop()
+        _w10 = _SW10(_m10c)
+        # ⚠️ 页索引**不要用算术**（count()-6 之类）：页数一改就指错页，而且
+        # 指错时断言会以一种看似无关的方式失败。按标签文本找页。
+        # Find the page by its tab label: index arithmetic breaks the moment a
+        # page is added, and then the failure looks unrelated.
+        _bi10 = next(i for i in range(_w10.tabs.count())
+                     if _w10.tabs.tabText(i) == _w10.t.t("tab.behavior"))
+        _w10.tabs.setCurrentIndex(_bi10)
+        app.processEvents()
+        check(_w10.avoid.isChecked(), "设置窗口读到了 avoid_input")
+        check(_w10.avoid_margin.value() == 300,
+              "设置窗口读到了回避区大小",
+              str(_w10.avoid_margin.value()))
+        check(_w10.avoid_typing.value() == 2,
+              "毫秒换算成秒显示（2500ms -> 2s，不是 25s）",
+              str(_w10.avoid_typing.value()))
+        # 在「行为」页上（新设置项先问用户会点哪个页签）
+        check(_w10.tabs.currentIndex() == _bi10,
+              "「输入回避」控件在「行为」页上", str(_bi10))
+
+        _w10.avoid.setChecked(False)
+        _w10.avoid_margin.setValue(210)
+        _w10.avoid_typing.setValue(3)
+        _w10.apply()
+        check(_s10c.get("avoid_input") is False, "关闭开关能写回配置")
+        check(_s10c.get("avoid_input_margin_x") == 210,
+              "回避区大小能写回", str(_s10c.get("avoid_input_margin_x")))
+        # 高度必须跟着宽度按 210:80 联动，不能两个独立存
+        check(abs(_s10c.get("avoid_input_margin_y") - 80) <= 1,
+              "回避区高度按 210:80 比例联动（UI 只有一个尺寸旋钮）",
+              str(_s10c.get("avoid_input_margin_y")))
+        check(_s10c.get("avoid_input_typing_ms") == 3000,
+              "秒换算回毫秒写回", str(_s10c.get("avoid_input_typing_ms")))
+        _w10.close()
+        _m10c._settings_window = None
+        _m10c.quit()
+    finally:
+        _shutil.rmtree(_d10c, ignore_errors=True)
 
     _d19 = _tempfile.mkdtemp(prefix="utopet_idlespin_")
     try:

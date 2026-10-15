@@ -92,6 +92,7 @@
   "msg.restart_needed": "Some settings need an engine restart to take effect.",
   "msg.saved": "Settings saved.",
   "panel.character": "Character: {0}",
+  "panel.character_pick": "Character to summon",
   "panel.count": "Mascots now: {0}",
   "panel.dismiss_all": "Dismiss all",
   "panel.dismiss_one": "Dismiss one",

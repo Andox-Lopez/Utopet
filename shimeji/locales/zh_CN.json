@@ -92,6 +92,7 @@
   "msg.restart_needed": "部分设置需要重启引擎后生效。",
   "msg.saved": "设置已保存。",
   "panel.character": "角色：{0}",
+  "panel.character_pick": "召唤哪个角色",
   "panel.count": "当前宠物：{0} 只",
   "panel.dismiss_all": "全部解散",
   "panel.dismiss_one": "解散一只",

@@ -92,6 +92,7 @@
   "msg.restart_needed": "一部の設定はエンジン再起動後に有効になります。",
   "msg.saved": "設定を保存しました。",
   "panel.character": "キャラクター：{0}",
+  "panel.character_pick": "どのキャラクターを呼ぶか",
   "panel.count": "現在のマスコット：{0} 匹",
   "panel.dismiss_all": "全て解散",
   "panel.dismiss_one": "1匹解散",

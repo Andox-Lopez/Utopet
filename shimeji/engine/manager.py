@@ -94,7 +94,8 @@ def list_characters(settings: Settings | None = None) -> list[tuple[str, str]]:
     if settings:
         roots.extend(settings.get("character_dirs", []) or [])
     out = []
-    seen = set()
+    seen_dirs = set()
+    seen_labels = set()
     for root in roots:
         if not os.path.isdir(root):
             continue
@@ -104,9 +105,20 @@ def list_characters(settings: Settings | None = None) -> list[tuple[str, str]]:
                 continue
             img = d if os.path.exists(os.path.join(d, "shime1.png")) \
                 else os.path.join(d, "img")
-            if os.path.exists(os.path.join(img, "shime1.png")) and d not in seen:
-                seen.add(d)
-                out.append((name, d))
+            if not os.path.exists(os.path.join(img, "shime1.png")):
+                continue
+            # 两重去重：目录（同一个目录别列两遍）**和显示名**。
+            # 只按目录去重是不够的 —— 用户额外角色目录里放一个同名的「Miku」，
+            # 全局目录和额外目录都会列出「Miku」，下拉框和菜单里出现两个一样
+            # 的条目，用户点了其中一个不知道为什么是同一只。
+            # Two dedups: by directory *and* by label.  Directory alone is not
+            # enough -- an extra character dir holding another "Miku" would
+            # list the same label twice, and the user could not tell them apart.
+            if d in seen_dirs or name in seen_labels:
+                continue
+            seen_dirs.add(d)
+            seen_labels.add(name)
+            out.append((name, d))
     return out
 
 
@@ -563,9 +575,15 @@ class Manager(QObject):
 
     create_mascot = summon
 
-    def summon_many(self, count: int, behavior: str | None = None) -> int:
+    def summon_many(self, count: int, behavior: str | None = None,
+                    label: str | None = None) -> int:
         """
         一次召唤多只 / Summon several mascots at once.
+
+        `label` 指定这批都用哪个角色（多角色模式生效；不给就用默认角色）——
+        面板上的角色下拉框 + 数量框走的就是这条路。
+        `label` picks the character for this batch (multi-character mode only),
+        which is what the panel's character drop-down plus count box drive.
 
         开启「均匀铺开」时，落点按 n 等分横向铺在工作区里（带随机抖动），
         比纯随机更不容易叠在一起；到达数量上限时提前收尾，返回实际召唤数。
@@ -594,7 +612,8 @@ class Manager(QObject):
                 x = left + 80 + span * frac
             else:
                 x = random.randint(left + 80, max(left + 81, right - 80))
-            if self.summon(Pt(x, wa.bottom), behavior=behavior) is None:
+            if self.summon(Pt(x, wa.bottom), behavior=behavior,
+                           label=label) is None:
                 break
             added += 1
         return added

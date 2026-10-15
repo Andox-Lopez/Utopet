@@ -104,24 +104,31 @@ class TaskbarPanel(QWidget):
 
         outer.addSpacing(4)
 
-        # 第一行：[数量输入] [召唤]
-        # 顺序是「输入框在按钮前面」—— 按钮只写「召唤」，数量一眼就能看到，
-        # 不用去猜它到底是「召唤一只」还是「召唤 5 只」。
-        # 以前是「一次召唤 [5] [召唤一只]」，两个控件都在讲数量，重复且啰嗦。
-        # Row one: [count input] [Summon].  The number sits in front of the
-        # button, so the button can just say "Summon" -- it used to read
-        # "Summon one" right next to a spinbox already showing 5.
+        # 第一行：[角色下拉] [数量输入] [召唤]
+        # 顺序：**角色在最前，数量其次，按钮最后**。三个控件合起来表达一件事：
+        # 「召唤几只、什么角色」—— 读起来就是从左到右的条件链。
+        # 以前角色只能从托盘右键的「召唤其他角色」子菜单选，而托盘图标默认被
+        # 收进 Windows 的溢出区，等于没有入口（用户报「无法召唤其他角色」）。
+        # Row one: [character] [count] [Summon].  The character comes first,
+        # then the count, then the button: read left to right it is the whole
+        # "how many, and which one".  Characters used to be reachable only
+        # through the tray sub-menu, and the tray icon lives in Windows'
+        # overflow area by default -- i.e. no entry at all.
         row1 = QHBoxLayout()
+        self.char_combo = QComboBox()
+        self.char_combo.setMinimumWidth(92)
+        self.char_combo.setToolTip(self.t.t("panel.character_pick"))
+        self.char_combo.setAccessibleName(self.t.t("panel.character_pick"))
+        row1.addWidget(self.char_combo, 1)
         self.summon_spin = QSpinBox()
         self.summon_spin.setRange(1, 100)
         self.summon_spin.setFixedWidth(64)
         self.summon_spin.setValue(int(self.manager.settings.get("summon_count", 5)))
         self.summon_spin.valueChanged.connect(self._on_count_changed)
+        row1.addWidget(self.summon_spin)
         self.btn_summon = QPushButton()
         self.btn_summon.setMinimumWidth(84)
         self.btn_summon.clicked.connect(self._summon_many)
-        row1.addStretch(1)
-        row1.addWidget(self.summon_spin)
         row1.addWidget(self.btn_summon)
         outer.addLayout(row1)
 
@@ -182,6 +189,7 @@ class TaskbarPanel(QWidget):
         # before any label appeared.  The panel is the only entry point the user
         # can see, so a blank one means "nothing is clickable".
         self._refresh_texts()
+        self._fill_characters()
         self.refresh_status()
 
         # 数量会随分裂 / 解散自己变化，低频轮询足够
@@ -195,9 +203,46 @@ class TaskbarPanel(QWidget):
         """记住上次选择的批量数量 / Remember the chosen batch size."""
         self.manager.settings.set("summon_count", int(value))
 
+    def _fill_characters(self):
+        """
+        填充角色下拉框 / Fill the character drop-down.
+
+        只有一个角色时**整框隐藏** —— 一个选项的下拉框只是噪音；多角色模式
+        没开但用户额外加了角色目录时照样显示，因为召唤本来就是按角色来的。
+        With a single character the whole box is hidden (a one-item drop-down is
+        noise); it shows whenever there is more than one, multi-character mode
+        or not, because summoning is per-character either way.
+        """
+        from shimeji.engine.manager import list_characters
+        chars = list_characters(self.manager.settings)
+        cur = self.manager.settings.get("character", "")
+        self.char_combo.clear()
+        for label, _path in chars:
+            self.char_combo.addItem(label, label)
+        want = None
+        for label, _ in chars:
+            if label == cur:
+                want = label
+                break
+        if want is None and chars:
+            want = chars[0][0]
+        if want is not None:
+            i = self.char_combo.findData(want)
+            self.char_combo.setCurrentIndex(max(0, i))
+        # 一个角色就没必要让人选 / no point choosing among one
+        self.char_combo.setVisible(len(chars) > 1)
+
     def _summon_many(self):
         n = int(self.summon_spin.value())
-        self.manager.summon_many(n)
+        # 只有一个角色时下拉框没有意义，传 None 走默认角色那条路。
+        # ⚠️ 判据是**条目数**，不是 `isVisible()` —— 面板还没 show() 时后者
+        # 恒为 False，会把用户选的角色整个丢掉（召唤出一堆默认角色）。
+        # The test is the item count, NOT `isVisible()`: an unshown panel makes
+        # that False and the chosen character would be silently dropped.
+        label = None
+        if self.char_combo.count() > 1:
+            label = self.char_combo.currentData() or None
+        self.manager.summon_many(n, label=label)
         self.refresh_status()
 
     def _refresh_texts(self):
@@ -213,6 +258,10 @@ class TaskbarPanel(QWidget):
         self.btn_settings.setText(t.t("panel.settings"))
         self.btn_quit.setText(t.t("panel.quit"))
         self.hint_label.setText(t.t("panel.hint"))
+        # 角色下拉没有可见标签（宽度不够），含义靠 tooltip / accessible name
+        # The character box has no visible label (no room); tooltip carries it.
+        self.char_combo.setToolTip(t.t("panel.character_pick"))
+        self.char_combo.setAccessibleName(t.t("panel.character_pick"))
         # 输入框没有可见标签了（按钮只写「召唤」），数量含义靠 tooltip 传达
         # The spin box lost its visible label (the button just says "Summon"),
         # so the count's meaning is carried by the tooltip.
@@ -223,6 +272,7 @@ class TaskbarPanel(QWidget):
         """语言切换后刷新 / Refresh after a language switch."""
         self.t = get_i18n()
         self._refresh_texts()
+        self._fill_characters()
         self.refresh_status()
 
     # ------------------------------------------------------------------
@@ -246,7 +296,28 @@ class TaskbarPanel(QWidget):
         # Clamp only; do not drag it back to the corner.  refresh_status() runs
         # every 500ms, so an unconditional _place() would yank a user-moved
         # panel straight back — that is the "panel is stuck in the corner" bug.
+        # 角色集合可能变（导入角色包 / 在设置里改了角色目录）→ 下拉框跟着更新。
+        # The character set can change (pack import, settings edits); keep the
+        # box in sync, but never while the user has it open -- refilling an open
+        # drop-down would snap shut under their cursor.
+        self._maybe_refill_characters()
         self._clamp_into_work_area()
+
+    def _maybe_refill_characters(self):
+        """角色列表变了才重建下拉框 / Rebuild the box only when the list changed."""
+        from shimeji.engine.manager import list_characters
+        try:
+            chars = list_characters(self.manager.settings)
+        except OSError:
+            return
+        sig = tuple(lb for lb, _ in chars)
+        if sig == getattr(self, "_char_sig", None):
+            return
+        if self.char_combo.view().isVisible() or self.char_combo.hasFocus():
+            return                     # 用户正在选，别动它 / leave it alone
+        self._char_sig = sig
+        self._fill_characters()
+
     def _place(self):
         """
         把面板放到工作区右下角（仅在「打开」时调用）。

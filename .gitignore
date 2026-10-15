@@ -66,3 +66,6 @@ $RECYCLE.BIN/
 characters/*
 #非开发内容
 docs/*
+#发布工具
+tools/release.py
+

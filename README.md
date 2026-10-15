@@ -45,13 +45,29 @@ their own.
 ### 安装包 / Installer
 
 ```cmd
+:: 一步搞定：构建 → 打包 → 测试 → 推送 GitHub → 建 Release 并上传安装包
+:: 推送与发版前会停下来确认。/ One command; pauses before pushing.
+python tools\release.py
+```
+
+分步做的话：
+
+```cmd
 :: 1) 先构建自包含程序 / first build the standalone program
 python tools\build_release.py
 :: 2) 再生成安装包（characters 只打包 Miku）/ then build the installer
+::    ⚠️ ISCC 必须从 PowerShell 调，Bash/cmd 里调会被拦
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\Utopet.iss
 :: 产物 / output:
 output\Utopet-Setup-<版本>.exe
 ```
+
+`tools\release.py` 的开关：`--dry-run` 什么都不改、只打印计划；
+`--yes` 跳过确认（CI 用）；`--skip-tests` 跳过安装包实测
+（那一步会 taskkill 正在运行的桌宠）；`-m` 自定 commit message。
+它还会在推送前核对 **版本号三处一致**（`__init__.py` / `.iss` / `CHANGELOG.md`）——
+不一致就停下，因为装出来的版本和用户看到的不一致是最难查的一类问题。
+Release 说明直接取自 `CHANGELOG.md` 里那一节的正文，不另写一份。
 
 Inno Setup 6 编译出 **34 MB** 的安装包（免安装版是 117 MB，LZMA2 压掉了约 70%），
 默认装到 `C:\Program Files\Utopet\`，装完在开始菜单和桌面留快捷方式。
@@ -169,6 +185,7 @@ E:\shimejee-remake\
 │   └── gui\                     设置窗口 · 动作编辑器 · 任务栏面板 · 番茄钟 · 气泡
 │                                settings & editor & taskbar panel & widgets
 ├── characters\<角色>\            img\ + conf\
+├── tools\release.py              一键发版：构建·打包·测试·推送·Release
 ├── tools\make_logo.py           Logo 绘制脚本 / logo drawing script
 ├── analysis\                    测试脚本与截图 / test scripts & screenshots
 ├── config\                      settings.json（可手改，带注释）

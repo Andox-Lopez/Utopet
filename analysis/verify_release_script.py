@@ -46,6 +46,9 @@ check(rel.current_version() == "1.0.10",
       "版本号从 __init__.py 读出来", rel.current_version())
 
 # 造一个假的仓库副本，把 .iss 改成不一致，看能不能抓到
+# ⚠️⛔ **`rel.ROOT` 必须在整个版本一致性测试期间保持指向副本**，
+# 提前恢复成真仓库的话，后面的断言就全在测真仓库（永远一致，必然假绿）。
+# 早先把 ROOT 恢复得太早，测试就「通过」了却什么也没验证。
 tmp = tempfile.mkdtemp(prefix="rel_test_")
 import shutil
 for name in ("shimeji", "installer"):
@@ -58,27 +61,36 @@ rel.ROOT = tmp
 try:
     probs = rel.version_consistency()
     check(not probs, "副本里版本号仍然一致", str(probs))
+    _iss_orig = open(os.path.join(tmp, "installer", "Utopet.iss"),
+                     encoding="utf-8").read()
 
-    # 把 .iss 的 AppVersion 改掉
-    iss = os.path.join(tmp, "installer", "Utopet.iss")
-    txt = open(iss, encoding="utf-8").read()
-    open(iss, "w", encoding="utf-8").write(
-        txt.replace('#define AppVersion "1.0.10"',
-                    '#define AppVersion "1.0.9"'))
+    def _write_iss(text):
+        open(os.path.join(tmp, "installer", "Utopet.iss"), "w",
+             encoding="utf-8").write(text)
+
+    # AppVersion 对不上
+    _write_iss(_iss_orig.replace('#define AppVersion "1.0.10"',
+                                 '#define AppVersion "1.0.9"'))
     probs = rel.version_consistency()
     check(any("AppVersion" in p for p in probs),
           ".iss 的 AppVersion 对不上时能抓到", str(probs))
 
     # VersionInfoVersion 不是四段数字
-    open(iss, "w", encoding="utf-8").write(
-        txt.replace("VersionInfoVersion=1.0.10.0",
-                    "VersionInfoVersion=1.0.10"))
+    _write_iss(_iss_orig.replace("VersionInfoVersion=1.0.10.0",
+                                 "VersionInfoVersion=1.0.10"))
     probs = rel.version_consistency()
     check(any("四段数字" in p for p in probs),
           "VersionInfoVersion 不是四段数字时能抓到", str(probs))
 
+    # VersionInfoVersion 段数对但版本对不上
+    _write_iss(_iss_orig.replace("VersionInfoVersion=1.0.10.0",
+                                 "VersionInfoVersion=1.0.9.0"))
+    probs = rel.version_consistency()
+    check(any("VersionInfoVersion" in p for p in probs),
+          "VersionInfoVersion 版本对不上时能抓到", str(probs))
+
     # CHANGELOG 顶部版本对不上
-    open(iss, "w", encoding="utf-8").write(txt)
+    _write_iss(_iss_orig)
     cl = os.path.join(tmp, "CHANGELOG.md")
     c = open(cl, encoding="utf-8").read()
     open(cl, "w", encoding="utf-8").write(
@@ -88,6 +100,8 @@ try:
           "CHANGELOG 顶部版本对不上时能抓到", str(probs))
 finally:
     rel.ROOT = _fake_root
+    # 副本里 rel.ROOT 已被恢复，CHANGELOG 说明抽取那节也要用回真仓库
+    check(rel.ROOT == _fake_root, "rel.ROOT 已恢复成真仓库")
 
 # ── ② commit message ───────────────────────────────────────────────
 section("commit message 生成")
@@ -148,27 +162,45 @@ check(parsed == ["shimeji/\u4e2d\u6587\u8def\u5f84.py", "plain.py", "staged.py"]
       "非 ASCII 路径的引号被正确剥掉", str(parsed))
 rel.ROOT = _fake_root
 
-# ── ⑤ 确认型开关不会静默同意 ──────────────────────────────────────
-section("非交互环境下不会默认同意")
-class _NoTTY:
-    def isatty(self):
-        return False
-_saved_stdin = sys.stdin
-try:
-    sys.stdin = _NoTTY()
-    check(not sys.stdin.isatty(), "模拟出非交互 stdin")
-    raised = False
-    try:
-        rel.publish("1.0.10", "x.exe", dry=False, assume_yes=False,
-                    message=None)
-    except rel.Abort as e:
-        raised = "没有可交互的终端" in e.why
-    except Exception:
-        raised = False
-    check(raised,
-          "没有终端时拒绝发布，而不是当成同意（推 tag 撤不回来）")
-finally:
-    sys.stdin = _saved_stdin
+# ── ⑤ 确认门：非交互环境下不会静默同意 ─────────────────────────────
+section("确认门：非交互环境下拒绝发布")
+# ⛔⛔ **绝对不要在测试里调 `rel.publish()`**：它会真的 commit、真的 push。
+# 第一版测试就是这么写的，结果在真仓库里留下了一个提交（幸好推送前被
+# 确认门拦住了）。这里只静态检查「确认门存在且先于任何写操作」。
+# NEVER call `rel.publish()` here: it really commits and really pushes.  The
+# first version of this test did exactly that and left a commit in the working
+# repo (the confirmation gate saved the push).  Check the gate statically.
+_src = open(os.path.join(ROOT, "tools", "release.py"), encoding="utf-8").read()
+publish_body = _src[_src.index("def publish("):_src.index("def _gh_repo_slug(")]
+
+check("sys.stdin.isatty()" in publish_body,
+      "确认前检查了 stdin 是不是真终端")
+check("raise Abort" in publish_body.split("isatty()")[1][:200],
+      "没有终端时是「拒绝」而不是「默认同意」")
+# 顺序：确认门必须在 push 之前
+_i_confirm = publish_body.index("isatty()")
+_i_push = publish_body.index('git("push"')
+check(_i_confirm < _i_push, "确认门排在 push 之前（不会先推了再问）")
+_i_commit = publish_body.index('"commit"')
+check(_i_commit < _i_confirm,
+      "commit 在确认门之前（提交是本地的，错了能改；推送不行）")
+# --dry-run 必须在所有写操作之前就返回
+check('if dry:\n        say("  --dry-run：到此为止' in publish_body
+      or "--dry-run：到此为止" in publish_body,
+      "--dry-run 会在末尾明确说「什么都没做」")
+check(publish_body.index("--dry-run：到此为止") < _i_push,
+      "--dry-run 的返回点在 push 之前")
+
+# 真跑一次 dry-run，确认它一个字节都没改
+_before = rel.dirty_files()
+rel.publish("1.0.10", "x.exe", dry=True, assume_yes=False, message=None)
+_after = rel.dirty_files()
+check(_before == _after,
+      "dry-run 真的没有改动工作区（前后脏文件列表一致）",
+      "%d -> %d" % (len(_before), len(_after)))
+check(rel.upstream_divergence()[0] == 1,
+      "本地仍只领先远端 1 个提交（dry-run 没有推送）",
+      "ahead=%d" % rel.upstream_divergence()[0])
 
 print()
 print("=" * 60)

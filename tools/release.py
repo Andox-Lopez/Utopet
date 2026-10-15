@@ -36,13 +36,33 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ISS = os.path.join(ROOT, "installer", "Utopet.iss")
 ISCC = r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-DIST_EXE = os.path.join(ROOT, "dist", "Utopet", "Utopet.exe")
-OUTPUT_DIR = os.path.join(ROOT, "output")
 REMOTE = "Utopet"                      # git remote 名字，不是 URL
 BRANCH = "main"
 DEFAULT_MESSAGE = "feat: 发布 %s"
+
+
+def iss_path() -> str:
+    """`.iss` 的路径。/ Path to the installer script.
+
+    ⚠️ 这些路径**必须运行时从 `ROOT` 算**，不能在模块加载时定成常量。
+    模块级 `ISS = os.path.join(ROOT, ...)` 只在 ROOT 永远不变时成立；
+    一旦有测试或别的场景临时改 `ROOT`（指向一个仓库副本），那些常量会
+    继续读**原仓库** —— 于是「测副本里的配置」变成了「测真仓库」，
+    断言永远为真，测试假绿。
+    These must be derived from `ROOT` at call time.  As module-level constants
+    they froze the original ROOT, so pointing ROOT at a repo copy left the
+    paths still reading the real repo — tests passed while verifying nothing.
+    """
+    return os.path.join(ROOT, "installer", "Utopet.iss")
+
+
+def dist_exe() -> str:
+    return os.path.join(ROOT, "dist", "Utopet", "Utopet.exe")
+
+
+def output_dir() -> str:
+    return os.path.join(ROOT, "output")
 
 # 走这些的脚本会打印大量日志，只在出错时保留输出。
 # Scripts run quietly unless they fail; their own output is a wall of noise.
@@ -161,7 +181,7 @@ def current_version() -> str:
 
 def setup_path() -> str:
     v = current_version()
-    return os.path.join(OUTPUT_DIR, "Utopet-Setup-%s.exe" % v)
+    return os.path.join(output_dir(), "Utopet-Setup-%s.exe" % v)
 
 
 def version_consistency() -> list[str]:
@@ -172,7 +192,7 @@ def version_consistency() -> list[str]:
     """
     problems = []
     v = current_version()
-    iss = open(ISS, encoding="utf-8").read()
+    iss = open(iss_path(), encoding="utf-8").read()
     m = re.search(r'(?mi)^#define AppVersion\s+"([^"]+)"', iss)
     if not m:
         problems.append(".iss 里找不到 #define AppVersion")
@@ -336,12 +356,12 @@ def build_dist(dry: bool) -> None:
              timeout=1800, quiet=False)
     if rc != 0:
         raise Abort("构建失败（返回码 %d）" % rc)
-    if not os.path.exists(DIST_EXE):
+    if not os.path.exists(dist_exe()):
         raise Abort("构建说成功了，但 %s 不存在"
-                    % os.path.relpath(DIST_EXE, ROOT))
+                    % os.path.relpath(dist_exe(), ROOT))
     n = sum(len(f) for _, _, f in os.walk(os.path.join(ROOT, "dist", "Utopet")))
     ok("dist/ 就绪：%s（约 %s，%d 个文件），用时 %.0fs"
-       % (os.path.relpath(os.path.dirname(DIST_EXE), ROOT),
+       % (os.path.relpath(os.path.dirname(dist_exe()), ROOT),
           human(sum(os.path.getsize(os.path.join(r, f))
                     for r, _, fs in os.walk(os.path.join(ROOT, "dist", "Utopet"))
                     for f in fs)), n, time.time() - t0))
@@ -367,7 +387,7 @@ def build_setup(version: str, dry: bool) -> str:
     say("  $ powershell ISCC installer\\Utopet.iss")
     p = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-         '& "%s" "%s"; exit $LASTEXITCODE' % (ISCC, ISS)],
+         '& "%s" "%s"; exit $LASTEXITCODE' % (ISCC, iss_path())],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", timeout=1800)
     if p.returncode != 0:
@@ -645,7 +665,8 @@ def main() -> int:
     if not args.dry_run:
         say("")
         say("  安装包  %s" % os.path.basename(setup))
-        say("  dist    %s" % os.path.relpath(os.path.dirname(DIST_EXE), ROOT))
+        say("  dist    %s"
+            % os.path.relpath(os.path.dirname(dist_exe()), ROOT))
         say("  桌宠跑完安装测试后不在运行，需要的话自己再打开。")
     say("=" * 68)
     return 0

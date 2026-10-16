@@ -8,7 +8,13 @@ import shutil
 import sys
 import tempfile
 
-ROOT = r"E:\shimejee-remake"
+# 从脚本位置反推仓库根 —— **不要写死 `E:\shimejee-remake`**：
+# 换台机器、换个盘符、或者把仓库 clone 到别处，这个脚本就直接失效；
+# 而且它是「跑测试」的第一步，路径错了后面全废。
+# Derive the repo root from this file's location.  Never hard-code a drive
+# letter: the script dies on any other machine, and this is step one -- a
+# wrong root makes everything after it meaningless.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from PySide6.QtWidgets import QApplication

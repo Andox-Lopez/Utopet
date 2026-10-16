@@ -193,14 +193,20 @@ check(publish_body.index("--dry-run：到此为止") < _i_push,
 
 # 真跑一次 dry-run，确认它一个字节都没改
 _before = rel.dirty_files()
+_before_ahead = rel.upstream_divergence()[0]
 rel.publish("1.0.10", "x.exe", dry=True, assume_yes=False, message=None)
 _after = rel.dirty_files()
+_after_ahead = rel.upstream_divergence()[0]
 check(_before == _after,
       "dry-run 真的没有改动工作区（前后脏文件列表一致）",
       "%d -> %d" % (len(_before), len(_after)))
-check(rel.upstream_divergence()[0] == 1,
-      "本地仍只领先远端 1 个提交（dry-run 没有推送）",
-      "ahead=%d" % rel.upstream_divergence()[0])
+# ⚠️ 不要断言「领先 N 个提交」—— 那个 N 每次提交都会变，测试会莫名其妙地
+# 开始失败。真正要证的是「dry-run 前后领先数没变」，也就是它没推。
+# Never assert "ahead by N": N changes with every commit, so the test starts
+# failing for no reason.  What matters is that dry-run did not change it.
+check(_before_ahead == _after_ahead,
+      "dry-run 没有推送（本地领先远端的提交数不变）",
+      "ahead %d -> %d" % (_before_ahead, _after_ahead))
 
 print()
 print("=" * 60)

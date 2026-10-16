@@ -20,8 +20,30 @@ settings.py 里 `_app_root()` 已经处理了 frozen 路径。
 
 import os
 
-# 所有路径都相对本 spec 文件所在目录（即项目根），保证在任意 cwd 下都能构建
-ROOT = os.path.abspath(os.getcwd())
+# 所有路径都从**项目根**反推，这样在任意 cwd 下构建结果都一样。
+#
+# Derive every path from the *project root* so the build is identical no matter
+# where PyInstaller is invoked from.
+#
+# ⭐ **用什么算 ROOT**：PyInstaller 在 spec 的命名空间里提供了 `SPECPATH`
+# （指向 **spec 文件所在目录**，不是它的父目录），而 **`__file__` 不存在** ——
+# 实测 `__file__ in globals()` 是 False，直接用它会 NameError。
+# `os.getcwd()` 是**当前工作目录**，跟 spec 文件在哪毫无关系；用它的话，从别处
+# 调用 PyInstaller 就会去找一个根本不存在的根，表现为「找不到 shimeji/locales」。
+#
+# ⚠️ 这三点都实测过，别凭直觉改回去：
+#   · `__file__`      → 不存在（NameError）
+#   · `os.getcwd()`   → 存在但语义不对（跟着 cwd 跑）
+#   · `SPECPATH`      → ✅ 正确：spec 文件所在目录
+#
+# All three were measured — do not "fix" this back to `__file__`/`getcwd`:
+#   · `__file__`    → absent (NameError)
+#   · `os.getcwd()` → present but wrong (follows the cwd)
+#   · `SPECPATH`    → correct: the directory holding this spec
+try:
+    ROOT = os.path.abspath(SPECPATH)            # PyInstaller 注入的官方变量
+except NameError:                                 # 不在 PyInstaller 下执行时兜底
+    ROOT = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(ROOT, "shimeji", "assets")
 LOCALES = os.path.join(ROOT, "shimeji", "locales")
 # exe 图标用 app.ico —— 它带 16…256 全尺寸，资源管理器的大图标视图、

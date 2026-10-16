@@ -92,6 +92,11 @@ def main() -> int:
     env = {k: v for k, v in os.environ.items()
            if k.upper() in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE",
                             "LOCALAPPDATA", "APPDATA", "PROGRAMFILES", "SYSTEMDRIVE")}
+    # ⚠️ **这个绝对路径是测试手法本身，不是偷懒。** PATH 被清空到只剩系统目录，
+    # 任何 Python 都在不了 —— 只有这样才能证明 exe 真的自包含，而不是偷偷借了
+    # 我们这台机器的 Python。换成相对路径（或干脆保留原 PATH）这个验证就废了。
+    # This absolute path is the *mechanism*, not laziness: stripping PATH down
+    # to the system directory is what makes the test prove self-containment.
     env["PATH"] = r"C:\Windows\System32"
     proc = subprocess.Popen([EXE], env=env, cwd=DIST)
     pid = proc.pid

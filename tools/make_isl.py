@@ -20,7 +20,33 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_ISL = r"C:\Program Files (x86)\Inno Setup 6\Default.isl"
+
+# Inno Setup 是**外部软件**，装在哪儿由用户决定，与本仓库无关 —— 所以这里
+# 不写死，用环境变量 `ISCC_DIR` 覆盖，猜不到就退到常见的几个位置。
+# Inno Setup is an *external* tool: where it lives is the user's business, not
+# this repo's, so it is not hard-coded.  Override with the ISCC_DIR environment
+# variable; otherwise fall back to the usual install locations.
+def _find_default_isl() -> str:
+    # 显式指定（ISCC_DIR）**即使不存在也直接用**，不静默回退 —— 用户特意
+    # 指了路径却发现脚本读了别的安装，那永远查不清自己哪里配错了。
+    # An explicit override is honoured even when missing; falling back silently
+    # would hide the user's own misconfiguration.
+    override = os.environ.get("ISCC_DIR")
+    if override:
+        return os.path.join(override, "Default.isl")
+    cands = [
+        r"C:\Program Files (x86)\Inno Setup 6\Default.isl",
+        r"C:\Program Files\Inno Setup 6\Default.isl",
+    ]
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    # 全都没找到就返回第一个候选，让后面的调用报「文件不存在」——那样
+    # 报错信息里有真实路径，比在这里猜一堆更清楚。
+    return cands[0]
+
+
+DEFAULT_ISL = _find_default_isl()
 OUT = os.path.join(ROOT, "installer", "ChineseSimplified.isl")
 
 # ---------------------------------------------------------------------------

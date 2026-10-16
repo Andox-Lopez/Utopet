@@ -36,10 +36,42 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ISCC = r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 REMOTE = "Utopet"                      # git remote 名字，不是 URL
 BRANCH = "main"
 DEFAULT_MESSAGE = "feat: 发布 %s"
+
+
+def find_iscc() -> str:
+    """找到 ISCC.exe / ISCC。/ Locate the Inno Setup compiler.
+
+    Inno Setup 是**外部软件**，装在哪儿由用户决定 —— 与本仓库无关，所以
+    不写死。优先用环境变量 `ISCC`（可以是完整 exe 路径），再找环境变量
+    `ISCC_DIR`，最后退到几个常见安装位置（32/64 位都试）。
+
+    Inno Setup is an external tool installed wherever the user put it, so it is
+    not hard-coded.  Prefer `$ISCC` (full path to the exe), then `$ISCC_DIR`,
+    then the usual install locations.
+    """
+    # 显式指定的路径**即使不存在也直接返回**，不静默回退 —— 用户特意设了
+    # ISCC / ISCC_DIR 却发现脚本跑去用别的安装，那就永远搞不清自己哪里配错了。
+    # `ISCC_DIR` 也要「照办」：目录是用户指明的，目录里的 exe 不存在就该
+    # 报错说他装的不对，而不是悄悄换个安装用起来。
+    # An explicit override is honoured even when it does not exist: silently
+    # falling back hides the user's own mistake.  `ISCC_DIR` counts as an
+    # override too — if its exe is missing, say so rather than quietly using
+    # a different installation.
+    exe = os.environ.get("ISCC")
+    if exe:
+        return exe
+    d = os.environ.get("ISCC_DIR")
+    if d:
+        return os.path.join(d, "ISCC.exe")
+    for c in (r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+              r"C:\Program Files\Inno Setup 6\ISCC.exe"):
+        if os.path.exists(c):
+            return c
+    # 都不在：返回 32 位那个，交给调用处的报错带上它
+    return r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
 
 def iss_path() -> str:
@@ -73,6 +105,9 @@ QUIET_SCRIPTS = (
     "verify_characterpack.py",
     "verify_cfgfmt.py",
     "verify_version_resources.py",
+    "verify_release_script.py",
+    "verify_iscc_lookup.py",
+    "verify_no_hardcoded_paths.py",
     "regression_actions.py",
     "smoke_taskbar.py",
 )
@@ -376,8 +411,11 @@ def build_setup(version: str, dry: bool) -> str:
     if dry:
         say("  --dry-run：跳过（将会生成 %s）" % os.path.basename(path))
         return path
-    if not os.path.exists(ISCC):
-        raise Abort("找不到 ISCC：%s" % ISCC)
+    iscc = find_iscc()
+    if not os.path.exists(iscc):
+        raise Abort("找不到 ISCC（Inno Setup 6 的编译器）。"
+                    "装好 Inno Setup 6，或用环境变量 ISCC 指定 exe 完整路径。"
+                    "最后试过的位置：%s" % iscc)
 
     # ⭐ ISCC 必须**从 PowerShell** 调。Bash 里 `cmd /c xxx.bat` 会被沙箱
     # 直接拦掉（"Invoking cmd.exe from Bash bypasses all command
@@ -387,7 +425,7 @@ def build_setup(version: str, dry: bool) -> str:
     say("  $ powershell ISCC installer\\Utopet.iss")
     p = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-         '& "%s" "%s"; exit $LASTEXITCODE' % (ISCC, iss_path())],
+         '& "%s" "%s"; exit $LASTEXITCODE' % (iscc, iss_path())],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", timeout=1800)
     if p.returncode != 0:

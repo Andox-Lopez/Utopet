@@ -6,14 +6,36 @@ RemoveDir 在目录非空时会失败，所以理论上安全。但「理论上�
 """
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 
-ROOT = "E:/shimejee-remake"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTDIR = os.path.join(ROOT, "analysis", "_keepdata_test")
-SETUP = os.path.join(ROOT, "output", "Utopet-Setup-1.0.5.exe")
+
+
+def _latest_setup() -> str:
+    """output\\ 里**最新的**安装包。/ The newest installer in output/.
+
+    ⚠️ 版本号**不要写死**：写死 `1.0.5` 的话，每次发版它都在测一个半年前的包
+    —— 而且那个包早就被新版本取代了，测它测不出当前版本任何问题。
+    这里按版本号排序取最新的（⛔ 不是按文件名字符串排：'1.0.10' < '1.0.5'，
+    因为 '1' < '5' —— 1.0.10 是第一个会踩到的两位数修订号）。
+    """
+    hits = glob.glob(os.path.join(ROOT, "output", "Utopet-Setup-*.exe"))
+
+    def _key(p):
+        m = re.search(r"Utopet-Setup-(\d+(?:\.\d+)+)", os.path.basename(p))
+        return tuple(int(x) for x in m.group(1).split(".")) if m else (0,)
+
+    if not hits:
+        raise SystemExit("output\\ 里没有安装包，先跑 tools/release.py")
+    return sorted(hits, key=_key)[-1]
+
+
+SETUP = _latest_setup()
 
 ok = True
 

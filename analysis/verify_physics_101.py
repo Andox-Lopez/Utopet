@@ -2097,6 +2097,9 @@ def main() -> int:
                                       DEFAULT_MARGIN_Y as _DMY,
                                       DEFAULT_TYPING_WINDOW_MS as _DTW)
     from shimeji.engine.manager import BEHAVIOR_RUN_AWAY as _BRA
+    # 1.0.11 起实际触发的是**运行时注册的专用飞扑动作**（目的地由
+    # `mascot.fleeTargetX` 提供）；角色包自带的「跑开」只是回退路径。
+    from shimeji.engine.manager import ACTION_FLEE as _FLEE
 
     # ── A. 键盘活动的时间窗 ──────────────────────────────────────────
     _az1 = _AZ()
@@ -2210,10 +2213,32 @@ def main() -> int:
         for _ in range(20):
             _m10.tick()
 
+        # ⚠️ 必须清冷却**并清空队列**：1.0.11 加了「一次只飞一次」，前面那
+        # 20 帧的 tick 已经触发过一次 —— 冷却会让这次调用直接 return，而
+        # `_force_behavior(interrupt=True)` 每次都会 `pending_behaviors.clear()`
+        # 再 append，所以队列在两次调用之间已经被消耗空了。
+        # 不清这两样的话，这个断言就变成 flaky：有时空、有时有值。
+        # Clear both the cooldown *and* the queue: the 20 ticks above already
+        # fired one flee, and the interrupt branch clears+re-queues each time,
+        # so `pending_behaviors` is empty by now.  Skipping this made the
+        # assertion flaky.
+        _m10._avoid_last_flee = -1e9
+        _pet10._avoid_in = False
+        _pet10._avoid_dir = 0
+        _pet10._avoid_target_x = None
+        _pet10.pending_behaviors = []
+        # ⚠️ 还要**把它挪回回避区里**：那 20 帧 tick 里它已经被触发并**飞到
+        # 屏幕边上了**（1.0.11 会真的跑去边缘），所以此刻它根本不在区内，
+        # 再调用只会走「不在区 → 跳过」那条路。断言要成立就得先摆回位置。
+        # Also move it back into the zone: those 20 ticks already made it leap
+        # to a screen edge, so it is far outside now and would simply be
+        # skipped.  Put it back so the assertion actually exercises the trigger.
+        _pet10.anchor = Pt((_bx10[0] + _bx10[2]) // 2,
+                           (_bx10[1] + _bx10[3]) // 2)
         _m10._check_input_avoid()
         check(_pet10.pending_behaviors and
-              _pet10.pending_behaviors[0] == _BRA,
-              "压在输入区上的宠物被强制切成「跑」",
+              _pet10.pending_behaviors[0] in (_FLEE, _BRA),
+              "压在输入区上的宠物被强制切成「飞扑」（1.0.11 用专用动作）",
               str(_pet10.pending_behaviors))
         _zone_cx = (_bx10[0] + _bx10[2]) // 2
         _zone_cy = (_bx10[1] + _bx10[3]) // 2
@@ -2226,59 +2251,39 @@ def main() -> int:
         # when it re-enters, so a teleport inside the zone keeps the old side.
         _out10 = Pt(_zone_cx + _DMX + 400, _zone_cy)
 
-        _pet10.anchor = Pt(_zone_cx + 120, _zone_cy)
-        _pet10.pending_behaviors = []
-        _pet10._avoid_in = False
-        _m10._check_input_avoid()
-        check(_pet10.look_right is True,
-              "在回避区右半边 → 朝右跑（远离中心）",
-              "look_right=%s" % _pet10.look_right)
-
-        _pet10.anchor = _out10
-        _m10._check_input_avoid()          # 先出区
-        _pet10.anchor = Pt(_zone_cx - 120, _zone_cy)
-        _pet10.pending_behaviors = []
-        _m10._check_input_avoid()          # 再从左侧进区
-        check(_pet10.look_right is False,
-              "离开后从左侧重新进区 → 改成朝左跑（按新位置选边）",
-              "look_right=%s" % _pet10.look_right)
-
-        # 放回中央继续跑
+        # ─────────────────────────────────────────────────────────────
+        # ⛔ 1.0.10 的方向/位移断言已**移除**：那一版是「在原地小范围横向跑、
+        #   方向按『离回避区中心更远』选」。1.0.11 按用户要求改成
+        #   **飞扑到离自己更近的那侧屏幕边缘**（并给所有宠物、一次只触发一次
+        #   + 可配冷却），整套语义都变了，旧断言必然失败。
+        #   新语义由 `analysis/verify_avoid_pounce.py` 完整覆盖（33 项），
+        #   这里只保留与方向无关的几条：触发、关开关、找不到行为时降级。
+        #
+        # The 1.0.10 direction/movement assertions are GONE: that version
+        # shuffled sideways within the zone.  1.0.11 leaps to the *nearer*
+        # screen edge instead, for every pet, once per burst plus a cooldown,
+        # so the old expectations can no longer hold.  verify_avoid_pounce.py
+        # covers the new semantics; only direction-agnostic checks stay here.
         _pet10.anchor = Pt(_zone_cx, _zone_cy)
-
-        # 让它真的跑起来。判据是**每一帧的位移都朝着远离中心的方向** ——
-        # 不能只看 60 帧后的净位移：宠物跑出区、又从另一侧被别的东西推进来
-        # 时会重新选边，净位移就不自洽了（而那本来是正确的行为）。
-        # Per-frame invariant rather than net displacement over 60 frames: once
-        # the pet leaves and is pushed back in it re-picks a side, so the net
-        # displacement stops being self-consistent — and that is correct
-        # behaviour, not a regression.
-        _wrong = 0
-        _steps = 0
-        _pet10.anchor = Pt(_zone_cx + 120, _zone_cy)
+        _pet10.pending_behaviors = []
         _pet10._avoid_in = False
-        for _ in range(60):
-            _prev = float(_pet10.anchor.x)
-            _pet10.action = None
-            _pet10.pending_behaviors = [_BRA]
-            _m10._check_input_avoid()
-            _m10.tick()
-            _dx = float(_pet10.anchor.x) - _prev
-            if abs(_dx) < 0.01:
-                continue
-            _steps += 1
-            # 位移方向必须与「当前朝向」一致：look_right=True → dx > 0。
-            if (_dx > 0) != bool(_pet10.look_right):
-                _wrong += 1
-        check(_steps > 0, "逃跑过程中确实产生了位移",
-              "steps=%d" % _steps)
-        check(_wrong == 0,
-              "每一帧的位移方向都与朝向一致（逃跑不折返、不抽搐）",
-              "错向 %d/%d 帧" % (_wrong, _steps))
+        _m10._avoid_last_flee = -1e9
+        _m10._check_input_avoid()
+        check(_pet10.pending_behaviors and
+              _pet10.pending_behaviors[0] in (_FLEE, _BRA),
+              "宠物被强制切成「飞扑」（专用动作，非原版随机游走）",
+              str(_pet10.pending_behaviors))
+        check(_pet10._avoid_target_x is not None,
+              "飞扑有明确的目标 X（不是随机游走）",
+              str(_pet10._avoid_target_x))
+        check(_pet10._avoid_in is True, "被标记为「正在飞扑」")
 
         # 区外的宠物不受影响
         _far10 = _m10.summon(Pt(_wa10.right - 60, _wa10.bottom))
         _far10.pending_behaviors = []
+        _m10.avoid.rects = [_bx10]
+        _m10.avoid.typing = True
+        _m10._avoid_last_flee = -1e9
         _m10._check_input_avoid()
         check(_far10.pending_behaviors == [],
               "不在回避区的宠物不会被强制跑",
@@ -2362,7 +2367,13 @@ def main() -> int:
 
     # ── H. 设置项默认值 ─────────────────────────────────────────────
     from shimeji.settings import DEFAULTS as _DEF10
-    check(_DEF10.get("avoid_input") is True, "avoid_input 默认开")
+    # 1.0.11 起默认**关闭**（1.0.10 首发时是 True，收到「宠物凭空行走 +
+    # 反复转向」的反馈后关的）。
+    check(_DEF10.get("avoid_input") is False,
+          "avoid_input 默认关闭（升级即不会再自己走）",
+          str(_DEF10.get("avoid_input")))
+    check(_DEF10.get("avoid_flee_cooldown_sec") == 30,
+          "飞扑冷却默认 30 秒", str(_DEF10.get("avoid_flee_cooldown_sec")))
     check(_DEF10.get("avoid_input_margin_x") == _DMX
           and _DEF10.get("avoid_input_margin_y") == _DMY,
           "回避区默认 %dx%d（半宽/半高 %dx%d）"

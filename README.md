@@ -29,7 +29,7 @@ Shimeji 的 `Actions.xml` / `Behavior.xml` 配置** —— 网上能找到的原
 <details>
 <summary><b>免安装版（想直接跑、或不想装东西）</b></summary>
 
-去 Releases 下载或自行用下面的命令构建，产物是 `dist\Utopet\`（约 27 MB，含 Qt 运行库）。
+去 Releases 下载或自行用下面的命令构建，产物是 `dist\Utopet\`（约 117 MB，含 Qt 运行库）。
 **整个文件夹拷给谁都能跑**，不需要装 Python。
 
 ```cmd
@@ -263,7 +263,7 @@ python tools\build_release.py
 ```
 
 Self-contained: **no Python needed** to run it. The whole `dist\Utopet\` folder
-(≈27 MB, Qt runtime included) works anywhere. Character packs live in
+(≈117 MB, Qt runtime included) works anywhere. Character packs live in
 `characters\` next to the exe.
 
 > ⚠️ **Only run `dist\Utopet\Utopet.exe`.** `build\` used to hold a same-named

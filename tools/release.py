@@ -5,6 +5,7 @@
     python tools/release.py            # 全流程，推送前先确认
     python tools/release.py --yes      # 全流程，不询问（CI / 已经确认过）
     python tools/release.py --dry-run  # 只打印要做什么，不动任何东西
+    python tools/release.py --build-only   # 只构建+打包+测试，不 commit/推送/发版
     python tools/release.py --skip-tests   # 跳过安装测试（它会 taskkill 正在跑的实例）
 
 五步：
@@ -101,6 +102,7 @@ def output_dir() -> str:
 QUIET_SCRIPTS = (
     "verify_pomodoro.py",
     "verify_multi_character.py",
+    "verify_avoid_pounce.py",
     "verify_serifu.py",
     "verify_characterpack.py",
     "verify_cfgfmt.py",
@@ -670,6 +672,11 @@ def main() -> int:
                     help="跳过安装包实测（它会 taskkill 正在运行的桌宠）")
     ap.add_argument("--message", "-m", default=None,
                     help="commit message（默认取 CHANGELOG 里这一版的标题）")
+    ap.add_argument("--build-only", "-b", action="store_true",
+                    help="只构建 + 打包 + 测试，**不 commit、不 push、不建 Release**。"
+                         "产物留在 dist\\ 与 output\\，确认满意后再跑一次"
+                         "（去掉本参数）就能发出去。"
+                         " Build and package only: no commit, no push, no Release.")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -684,6 +691,22 @@ def main() -> int:
         build_dist(args.dry_run)
         setup = build_setup(version, args.dry_run)
         run_tests(args.dry_run, args.skip_tests)
+        if args.build_only and not args.dry_run:
+            # 「只打包」模式：前四步照跑，第五步整个跳过。
+            # **连 commit 都不做** —— 用户可能还想改点东西再发，工作区保持
+            # 原样才不会把「还没想好」的状态推到远端。
+            step(5, 5, "跳过发布（--build-only）")
+            say("")
+            ok("只构建不发布：没有 commit、没有 push、没有 Release")
+            say("")
+            say("  安装包  %s" % os.path.basename(setup))
+            say("  免安装  %s" % os.path.relpath(os.path.dirname(dist_exe()),
+                                                ROOT))
+            say("")
+            say("  确认满意后，去掉 --build-only 再跑一次就能发出去；")
+            say("  想先看看会做什么，加 --dry-run。")
+            say("=" * 68)
+            return 0
         publish(version, setup, args.dry_run, args.yes, args.message)
     except Abort as e:
         say("")

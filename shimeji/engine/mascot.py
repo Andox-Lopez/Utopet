@@ -134,6 +134,20 @@ class MascotRef:
     def environment(self):
         return self._m.env
 
+    @property
+    def fleeTargetX(self):
+        """输入回避时要飞扑到的 X（`None` = 没有在回避）。
+
+        暴露给表达式是为了让**角色包**能写出「往屏幕左边/右边跑」的目的地，
+        而不必改 `Actions.xml` —— 那是原版配置文件，全生态共用，改它等于
+        改动所有角色的行为。原版的 `走る` 目的地是随机表达式
+        （`workArea.left+64+Math.random()*(width-128)`），光翻转朝向只会让它在
+        屏幕中间随机走 —— 那正是 1.0.10「宠物凭空行走」的成因。
+        Exposed so character packs can express the flee target; `Actions.xml`
+        is the original shared config, so editing it would change every pack.
+        """
+        return getattr(self._m, "_avoid_target_x", None)
+
 
 class Mascot(QWidget):
     """桌上的一只宠物 / One mascot on the desktop."""
@@ -197,6 +211,11 @@ class Mascot(QWidget):
         #: a stale side once the pet leaves and is pushed back in.
         self._avoid_dir = 0
         self._avoid_in = False
+        #: 1.0.11：这次要飞扑到的屏幕边缘 X（-1 / +1 时分别是左边 / 右边）。
+        #: `None` = 不在回避。供 `MascotRef.fleeTargetX` 读，让自定义动作里能写
+        #: `目的地X="#{mascot.fleeTargetX}"` 真正飞过去。
+        #: Where to leap to: the X of the nearer screen edge.  None = not fleeing.
+        self._avoid_target_x = None
 
         #: 会话恢复用：上次退出时正在播放的行为名与已经跑了多少帧。
         #: 下一个动作创建时会**只对同名行为**生效（见 `Manager._tick_mascot`）：

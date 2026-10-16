@@ -177,20 +177,32 @@ class AvoidZones:
                 return True
         return False
 
-    def escape_direction(self, x: int, y: int) -> int:
-        """往哪个方向逃：``-1`` 向左、``+1`` 向右。
+    def escape_direction(self, x: int, y: int,
+                         screen_left: int = 0, screen_right: int = 0) -> int:
+        """该往哪一侧躲：``-1`` 屏幕左边、``+1`` 屏幕右边。
 
-        取「离回避区中心最远」的一侧，而不是「离得最近边最远」—— 前者一步就能
-        真正离开，后者只是从贴着边变成贴着另一边，还是在输入区边上晃。
-        Which way to flee: the side *further* from the zone centre, so one run
-        actually clears it instead of hugging the opposite edge.
+        **判据是「哪边更近」**（比较宠物到左右**屏幕边缘**的距离），不是
+        「哪边离回避区中心远」。用户要的是飞到屏幕一侧去，而不是在原地小范围
+        挪动 —— 后者在 420×160 的区里等于原地踏步。
+
+        Compare the pet's distance to the **left and right screen edges** and
+        pick the nearer one.  Going to a screen edge is a real escape; a short
+        nudge inside a 420x160 zone just looks like standing still.
+
+        :param screen_left / screen_right: 当前显示器工作区的左右边。传 0/0 时
+            退回「朝远离回避区中心的方向」（兼容旧调用）。
+        :raises ValueError: 不传屏幕边界时不必，但传了就必须两个都给。
         """
         if not self.rects:
             return -1
-        # 用所有区的并集包围盒的中心作参考 / centre of the union bbox
+
+        if screen_right > screen_left:
+            to_left = abs(x - screen_left)
+            to_right = abs(screen_right - x)
+            return -1 if to_left <= to_right else 1
+
+        # 没给屏幕边界：退回到「远离回避区中心」，并用屏幕中心的近似值。
         min_l = min(r[0] for r in self.rects)
-        min_t = min(r[1] for r in self.rects)
         max_r = max(r[2] for r in self.rects)
-        max_b = max(r[3] for r in self.rects)
         cx = (min_l + max_r) / 2.0
         return -1 if x < cx else 1

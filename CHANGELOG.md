@@ -17,31 +17,61 @@
 
 ### 新增 Added
 
-- **输入回避。** 检测到你在打字时，压在输入区上的宠物会主动跑开，直到离开那块区域。
-  理由很实际：一只宠物蹲在输入框或者输入法候选窗上，既挡视线，也容易被手肘扫到。
+- **输入回避。** 检测到你在打字时，压在输入区上的宠物会**飞扑到离自己更近的那侧
+  屏幕边缘**躲起来。理由很实际：一只宠物蹲在输入框或者输入法候选窗上，既挡视线，
+  也容易被手肘扫到。
   - 在 **设置 → 行为** 里可以关掉，也可以调回避区的大小（默认 420×160，
     覆盖一行输入框加候选窗）和「停手多久之后不再回避」（默认 1.5 秒）。
   - 只在宠物**已经压到**这块区域时才干预它，其余时候完全不打扰 —— 桌面上
     没有宠物在打字区附近时，这个功能等于不存在。
   - 输入法候选窗弹出来时，那块区域也一并算进去（选字的时候更挡视线）。
-  - 逃跑方向是「离那一块更远的那一侧」，并且**在它跑开之前不会改**。
-    这一条是实测出来的：每帧重算方向会让宠物在区域中间来回折返，看起来像
-    在抽搐而不是在跑。
+  - **所有**压在区里的宠物都会一起飞出去，不是只挑一只。
+  - **一次输入只飞一次**，之后由「飞扑后多久可能再飞」解锁（默认 30 秒，
+    设置 → 行为 可改，设 0 就是随时都能飞）。这段时间里宠物**照常自由活动**
+    —— 这个时长决定的是「多久之后它才*可能*因为新一次打字而再飞」，
+    不是「多久恢复活动」。屏幕左右两侧本来就不太可能挡住打字的视线。
+    有一轮测试版里没做这个限制，于是宠物飞到边缘 → 停下时仍在区内 → 又飞到
+    另一边 → ……，看着像在自己来回踱步。
 
   **Keeps pets off the area you are typing in.**  A pet sitting on an input box
   or an IME candidate window gets in the way and invites an elbow accident.
   - Configure or disable it under **Settings → Behaviour**; the zone size
-    (420×160 by default, one input line plus a candidate list) and the
+    (420x160 by default, one input line plus a candidate list) and the
     idle timeout (1.5 s) are adjustable.
   - Only pets *already inside* the zone are moved.  With none nearby the
     feature does nothing at all.
   - An open IME candidate window joins the zone.
-  - The flee direction is the side further from the zone, and is **not**
-    recomputed mid-run: doing so made the pet double back around the centre,
-    which read as a twitch rather than an escape.
+  - Every pet inside the zone leaps out, not just one.
+  - Once per typing burst; a configurable cooldown (30 s by default, 0 = always)
+    unlocks the next one.  The pet lives normally during the cooldown -- this is
+    "how long before a *new* burst may make it flee again", not "how long until
+    it moves".
+
+### 🐛 修复 Fixed
+
+- **「宠物凭空行走、反复触发转向」。** 1.0.10 的初版实现每帧都给逃跑动作传
+  `interrupt=True`，而那条分支会立刻把当前动作置空 —— 于是动画每帧都从第 0 帧
+  重新起步，永远跑不完。表现就是原地踏步加朝向抖动，而且因为反复起跑速度也慢得多。
+  现在只在**进入回避区的那一刻**打断一次。
+  **Pets walked and flipped direction on their own.**  The first 1.0.10 build
+  re-queued the flee with `interrupt=True` on *every* tick, and that branch clears
+  the current action -- so the animation restarted from frame 0 forever.  Now it
+  interrupts once, on entry.
+- **飞扑方向现在是「离自己更近的那侧屏幕边缘」。** 初版是「在原地小范围横向挪」，
+  而原版「走る」动作的目的地本身是个随机表达式，不覆盖的话宠物只是在屏幕中间
+  随机走 —— 这才是「凭空行走」的另一半原因。现在由一条**运行时注册的专用动作**
+  读取「要飞到哪」并真正走过去。
+  **The flee now targets the nearer screen edge.**  The original run action has a
+  *random* destination, which is why the pet wandered; a dedicated action now
+  carries the real target.
+- **输入回避默认关闭。** 收到上述反馈后关掉 —— 按光标判定，而桌宠最爱往鼠标那儿
+  凑，两者目标天然重合。不想要的话请在 **设置 → 行为** 打开。
+  **Input avoidance is off by default** after the reports above; enable it under
+  **Settings → Behaviour**.
 
 - 设置 → 行为 新增「输入回避」组；设置项 `avoid_input`、`avoid_input_margin_x`、
-  `avoid_input_margin_y`、`avoid_input_typing_ms`。三语新增 5 条文案（234 → 239 键）。
+  `avoid_input_margin_y`、`avoid_input_typing_ms`、`avoid_flee_cooldown_sec`。
+  三语新增 5 条文案（239 → 244 键），并更新了「输入回避」的说明文字。
 
 ### ⚠️ 已知限制 Known limitation
 

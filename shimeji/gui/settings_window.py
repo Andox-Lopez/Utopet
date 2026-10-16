@@ -562,6 +562,14 @@ class SettingsWindow(QWidget):
         self.avoid_typing.setSuffix(" s")
         g3.layout().addRow(t.t("lbl.avoid_typing"), self.avoid_typing)
 
+        # 飞扑冷却：一次飞扑之后多久才可能再飞。0 = 不限制（但会往复踱步）。
+        self.avoid_cooldown = QSpinBox()
+        self.avoid_cooldown.setRange(0, 3600)
+        self.avoid_cooldown.setValue(
+            int(self.settings.get("avoid_flee_cooldown_sec", 30)))
+        self.avoid_cooldown.setSuffix(" s")
+        g3.layout().addRow(t.t("lbl.avoid_cooldown"), self.avoid_cooldown)
+
         hint_avoid = QLabel(t.t("hint.avoid_input"))
         hint_avoid.setWordWrap(True)
         g3.layout().addRow(hint_avoid)
@@ -1365,6 +1373,7 @@ class SettingsWindow(QWidget):
         s.set("avoid_input_margin_x", _ax)
         s.set("avoid_input_margin_y", max(0, int(round(_ax * 80 / 210.0))))
         s.set("avoid_input_typing_ms", self.avoid_typing.value() * 1000)
+        s.set("avoid_flee_cooldown_sec", self.avoid_cooldown.value())
         s.set("titles", [x.strip() for x in self.titles_edit.toPlainText().splitlines()
                          if x.strip()])
         s.set("window_offset", [sp.value() for sp in self.off_spins])

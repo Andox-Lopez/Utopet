@@ -53,6 +53,21 @@ BEHAVIOR_GATHER = "マウスの周りに集まる"
 #: a terminal behaviour (no next-behaviour list), so the pet naturally stops
 #: when clear.  Third-party packs may lack it — degrade quietly.
 BEHAVIOR_RUN_AWAY = "ワークエリアの下辺を走る"
+#: 运行时注册的专用飞扑动作名（见 `_register_flee_action`）。⛔ 不要复用原版的
+#: 「走る」—— 它的目的地是随机表达式，给它注入 `destX` 会让「到达目的地」条件
+#: 与目标冲突，引擎就改选别的行为，宠物朝**反**方向飞（实测跑的是「左の壁に
+#: 飛びつく」）。专用动作由 `mascot.fleeTargetX` 提供目的地，方向才对。
+#: A dedicated flee action registered at load time.  Do not reuse the original
+#: run: injecting `destX` into it breaks its arrival test and the engine picks a
+#: different behaviour, sending the pet the *wrong* way.
+ACTION_FLEE = "回避で飛び退く"
+#: 两次飞扑之间的**默认**冷却秒数（用户可在 设置 → 行为 改）。
+#: 默认 30 秒：飞扑完成后宠物在屏幕边缘待一会儿再自由活动。
+#: ⚠️ 这不是「避回来」的时间，宠物**一直是自由的**（冷却期间它照常做自己的
+#: 行为）—— 冷却只是说「这一轮打字里别再为了同一个理由又飞一次」。
+#: Default seconds before a pet may flee again for a *new* reason.  The pet is
+#: free the whole time; the cooldown only stops it re-fleeing on every frame.
+_DEFAULT_FLEE_COOLDOWN_SEC = 30
 #: 会话恢复时最多补多少帧 / how many frames session restore will fast-forward.
 #: 25 fps 下 20000 帧 ≈ 13 分钟；再长就不是「正在做的事」而是一段背景循环了。
 #: At 25 fps that is ~13 minutes; anything longer is not "what it was doing" but
@@ -209,6 +224,9 @@ class Manager(QObject):
             typing_window_ms=int(settings.get("avoid_input_typing_ms",
                                               DEFAULT_TYPING_WINDOW_MS)),
         )
+        #: 上一次触发飞扑的时刻（`time.monotonic()`），用于冷却。
+        #: When the last flee was triggered, for the cooldown.
+        self._avoid_last_flee = -1e9
         self._settings_window = None
         self._panel = None
         self._panel_enabled = bool(settings.get("taskbar_panel", True))
@@ -347,10 +365,80 @@ class Manager(QObject):
         self.images = bundle.images
         self.actions = bundle.actions
         self.behaviors = bundle.behaviors
+        self._register_flee_action(bundle)
         self._merge_custom()
         self.constants = dict(self.behaviors.constants)
         if "maxCount" not in self.constants:
             self.constants["maxCount"] = float(self.settings.get("max_count", 50))
+
+    def _register_flee_action(self, bundle):
+        """给这个角色注册一条**专用**的飞扑动作。
+
+        ⛔ **不能靠给原版的「走る」注入 `destX`**：那样会让它的「到达目的地」
+        条件与目标冲突，引擎判定「当前动作方向不对」就改选了别的行为 ——
+        实测触发后跑的是「左の壁に飛びつく」，宠物朝**反**方向飞。
+        所以这里注册一条新动作：目的地直接读 `mascot.fleeTargetX`
+        （见 `MascotRef.fleeTargetX`），由 `_avoid_target_x` 在触发时算好。
+
+        动画复用角色自己的「走/跑」姿势（从 bundle 里按名字找），所以不需要
+        任何图片资源，也不改角色的 `Actions.xml`（那是原版共用配置，改它等于
+        改动所有角色的行为）。
+
+        A dedicated action, not a `destX` override on the original run: that
+        override breaks the "arrived at target" test and the engine then picks a
+        different behaviour (measured: it ran "左の壁に飛びつく", the wrong way).
+        Reuses the character's own run poses, so no image assets are needed and
+        the pack's `Actions.xml` — shared with the original — stays untouched.
+        """
+        from ..xml.config import (ActionDef, Animation, BehaviorDef,
+                                  BehaviorRef, NextList)
+        from ..xml.expr import Val
+
+        if bundle is None or bundle.actions is None:
+            return
+        if ACTION_FLEE in bundle.actions:
+            return                      # 角色包自带同名动作就不覆盖
+
+        # 找一条能用的动画：优先原版的「走る」（速度 -4 是**向左**，靠
+        # `look_right` 翻向，见 runtime 的 `dx = -vx if look_right else vx`）。
+        poses = None
+        for src in (BEHAVIOR_RUN_AWAY, "走る"):
+            ad = bundle.actions.get(src)
+            if ad is None:
+                continue
+            for child in ([ad] + list(getattr(ad, "children", []) or [])):
+                anims = getattr(child, "animations", None)
+                if not anims:
+                    continue
+                ps = list(anims[0].poses)
+                if ps:
+                    poses = ps
+                    break
+            if poses:
+                break
+        if not poses:
+            return                      # 角色没有可复用的动画：安静降级
+
+        d = ActionDef()
+        d.name = ACTION_FLEE
+        d.kind = "move"
+        d.frame = "ground"
+        d.repeat = False
+        # `#` 前缀 = **每帧重算**，所以宠物被别的东西推走时目标会跟着变。
+        # `Val` 只收一个 raw 字符串，动态性靠这个前缀。
+        d.params["destX"] = Val("#{mascot.fleeTargetX}")
+        d.animations = [Animation(None, list(poses))]
+        bundle.actions.add(d)
+
+        # 行为：只含这一条动作，且是**终点行为**（`NextList(add=False)`）——
+        # 跑完就结束，不会自己接着做什么。
+        # `BehaviorSet.entries` 是 `(Expr, BehaviorDef)` 的列表，且没有 `add()`。
+        # `BehaviorRef(name, frequency, condition)` —— 注意第三个是 condition。
+        if bundle.behaviors is not None:
+            b = BehaviorDef(ACTION_FLEE, Val("0"), None,
+                            NextList(False, [BehaviorRef(ACTION_FLEE,
+                                                         Val("0"), None)]))
+            bundle.behaviors.entries.append((None, b))
 
     def _merge_custom(self):
         """合并 data/custom.xml 里的自定义动作与行为 / Merge custom.xml on top."""
@@ -862,6 +950,13 @@ class Manager(QObject):
             m.resume_behavior = None
             m.resume_seek = 0
             m.resume_index = 0
+            # ⛔ **不再给「跑」注入 destX**（1.0.11 去掉）：注入会让它「到达
+            # 目的地」的条件与目标冲突，引擎判定方向不对就改选别的行为 ——
+            # 实测触发后跑的是「左の壁に飛びつく」，朝**反**方向飞。
+            # 目的地现在由**专用飞扑动作**自己读 `mascot.fleeTargetX`，
+            # 见 `_register_flee_action`。
+            # No `destX` injection: it broke the original run's arrival test and
+            # the engine then chose a behaviour that sent the pet the wrong way.
             m.action = create_action(m, name, {}, None, seek, index)
             if m.action is None:
                 return
@@ -1037,31 +1132,50 @@ class Manager(QObject):
     # ------------------------------------------------------------------
     # 输入回避 / input avoidance (1.0.10)
     # ------------------------------------------------------------------
+    def _flee_cooldown_sec(self) -> float:
+        """飞扑冷却秒数（**每帧**从设置读，用户改完立即生效）。/ Flee cooldown.
+
+        ⛔ 别缓存在 `__init__`：设置窗口是在 Manager 起来之后才打开的，缓存了
+        改设置就得重启才生效。读一次 `dict.get` 的开销可以忽略。
+        Read every tick rather than caching: the Settings window is opened after
+        the Manager exists, so a cached value would need a restart to change.
+        """
+        try:
+            v = int(self.settings.get("avoid_flee_cooldown_sec",
+                                     _DEFAULT_FLEE_COOLDOWN_SEC))
+        except (TypeError, ValueError):
+            return float(_DEFAULT_FLEE_COOLDOWN_SEC)
+        return max(0.0, float(v))
+
     def _avoid_run_behavior(self, mascot: Mascot) -> str | None:
-        """这只宠物自己的行为表里有没有「跑开」这条 / The flee behaviour, if it has one.
+        """        这只宠物自己的行为表里有没有「跑开」这条 / The flee behaviour, if it has one.
+
+        优先用**运行时注册的专用飞扑动作** `ACTION_FLEE`（目的地由
+        `mascot.fleeTargetX` 提供）；角色包没有可用动画、注册失败时才退回原版的
+        「ワークエリアの下辺を走る」—— 后者的目的地是随机表达式，只能大致往那个
+        方向跑，飞不到屏幕边缘。
 
         ⚠️ 必须按**这只宠物自己的** `CharacterBundle` 查（项目铁律：多角色下
         每只宠物带自己的表）。`_force_behavior` 里那个 `self.actions` 判断是
         全局表 —— 拿它来决定能不能跑，会给角色 B 的宠物排一个只有角色 A 有的
         行为，然后静默失败。
 
-        第三方角色包可能没有这条行为，所以找不到就返回 None，安静降级：
-        **宁可宠物站在输入框旁边，也不要因为找不到行为而让它僵住。**
-        Look it up in *this* mascot's own table — the global one would let a pet
-        be queued for a behaviour only another character has.  Third-party packs
-        may lack it; degrade quietly rather than freezing the pet.
+        第三方角色包可能没有可复用的动画，所以注册可能失败；找不到就返回
+        None，安静降级：**宁可宠物站在输入框旁边，也不要因为找不到行为而让它僵住。**
+        Prefer the registered flee action; fall back to the original run only if
+        registration failed.  Look it up in *this* mascot's own bundle — the
+        global one would let a pet be queued for a behaviour only another
+        character has.  Degrade quietly rather than freezing the pet.
         """
-        name = BEHAVIOR_RUN_AWAY
         bundle = getattr(mascot, "bundle", None)
-        if bundle is not None:
-            actions = bundle.actions
-        else:
-            actions = self.actions
-        if name not in actions:
-            return None
-        if self.brain.behavior_by_name(mascot, name) is None:
-            return None
-        return name
+        actions = bundle.actions if bundle is not None else self.actions
+        for name in (ACTION_FLEE, BEHAVIOR_RUN_AWAY):
+            if name not in actions:
+                continue
+            if self.brain.behavior_by_name(mascot, name) is None:
+                continue
+            return name
+        return None
 
     @staticmethod
     def _mascot_box(m: Mascot) -> tuple[int, int, int, int]:
@@ -1137,6 +1251,35 @@ class Manager(QObject):
             self._clear_avoid_dirs()
             return
 
+        # ⛔ **冷却**：一次「正在输入」的会话里**只飞扑一次**。
+        # 屏幕左右两侧本来就不太可能挡住打字的视线，反复飞没有意义；更糟的是
+        # 会变成「用户打字 → 宠物飞到左边 → 停下时仍在区内 → 又飞到右边 → …」
+        # 的往复，看着像宠物自己在来回踱步。
+        # 只有**下一轮**打字（新的一次会话）才允许再飞。
+        #
+        # A cooldown makes the flee **once per burst**.  Re-triggering inside
+        # the same burst ping-pongs the pet left-right-left, which reads as
+        # pacing.  Screen edges are unlikely to block typing anyway.
+        #
+        # ⛔ 冷却期里宠物**并不是「冻结」** —— 它照常做自己的行为（走、坐、
+        # 爬窗…），只是不会因为「压在输入区上」再飞一次。所以这个时长决定的是
+        # 「多久之后它才**可能**因为新的一次打字而再飞」，不是「多久恢复活动」。
+        # The pet is NOT frozen during the cooldown: it keeps doing whatever it
+        # likes, it just will not re-flee on the same ground.  So this value
+        # means "how long before a *new* burst may make it flee again", not
+        # "how long until it moves".
+        _cool = self._flee_cooldown_sec()
+        _now = time.monotonic()
+        if _now - self._avoid_last_flee < _cool:
+            return
+        #: 本次调用里是否已经记过一次触发时刻。⛔ 别用
+        #: `if self._avoid_last_flee < 0` 那种判据 —— 上一轮飞扑后它是**正数**，
+        #: 于是永远不重置，冷却也就永远不解锁。
+        #: Whether this call already stamped the trigger.  Testing
+        #: `_avoid_last_flee < 0` is wrong: after a flee it is a positive
+        #: number, so the cooldown would never be re-armed.
+        _stamped = False
+
         for m in self.mascots:
             # 用**身体矩形相交**而不是「锚点在区内」。锚点是精灵的基准点，
             # 位置偏下（图集基准坐标常见 64,128），只判锚点会让宠物看起来已经
@@ -1146,42 +1289,81 @@ class Manager(QObject):
             # reports "outside" while the pet is visibly on top. See `_mascot_box`.
             left, top, right, bottom = self._mascot_box(m)
             if not self.avoid.contains_rect(left, top, right, bottom):
-                # 已经跑出去了：解除方向与「在区内」标记，下次再进来才重新选边。
-                # It got clear: drop both the direction and the inside flag so a
-                # later entry picks a fresh side.
+                # 已经跑出去了：解除「正在逃跑」标记，下次进区才重新触发。
+                # It got clear: drop the fleeing flag so a later entry re-arms.
                 if getattr(m, "_avoid_in", False):
                     m._avoid_in = False
                     m._avoid_dir = 0
+                    m._avoid_target_x = None
                 continue
+            if getattr(m, "_avoid_in", False):
+                # ⭐⭐ **已经在飞扑了，绝不再插队。**
+                # 1.0.10 第一版在这里每帧调 `_force_behavior(interrupt=True)`，
+                # 而那个分支会**立刻把 `m.action` 置 None** —— 于是动画每帧都
+                # 从第 0 帧重新起步，永远跑不完。表现就是「原地踏步 + 反复转向」。
+                # 这条路的文档原话是「只给用户主动拖拽用」，我用错了。
+                #
+                # ⛔ **飞扑完成也不重新判定**（1.0.11 按用户要求改的）。原来这
+                # 里「跑完就清标记、下一帧重触发」是为了让宠物真正离开区里，但
+                # 那会变成死循环：宠物飞到屏幕边 → 停下 → 若仍在区内 → 又触发
+                # → 飞到另一边 → ……
+                # 现在改成**一次输入会话只飞扑一次**，之后由冷却时间解锁。
+                # 反正屏幕左右两侧本来就不太可能挡住你打字的视线。
+                #
+                # The flee is **one shot per typing burst**: re-arming on
+                # completion caused an infinite loop (flee → still inside →
+                # flee the other way → …).  A cooldown unlocks the next one.
+                # Screen edges are unlikely to block the user's typing anyway.
+                m.set_look_right((m._avoid_dir or 1) > 0)
+                continue
+
             name = self._avoid_run_behavior(m)
             if name is None:
                 continue
-            # ⭐ **方向只在「从区外进入区内」的那一刻定一次**，跑的过程中不改。
-            # 每帧重算会让逃跑方向抖动：跑出中心后 `escape_direction` 的结果
-            # 会随位置来回翻转，宠物在区里折返，看起来像抽搐而不是逃跑。
-            # 而「首次进入」也不对 —— 宠物跑出去又被别的东西推进来时，
-            # 应该按它**这一次**的位置重新选边，而不是沿用上次的。
-            # 所以判据是「这一帧在区内、上一帧在区外」（见下面的 `_avoid_in`）。
-            # Pin the direction for the duration of one entry: recomputing every
-            # tick makes the pet oscillate around the centre, while pinning only
-            # on the *first* entry keeps a stale side after the pet leaves and
-            # is pushed back in.  Re-pinning is keyed on "inside now, outside
-            # last frame" instead.
-            if not getattr(m, "_avoid_in", False):
-                m._avoid_dir = self.avoid.escape_direction(m.anchor.x, m.anchor.y)
+            # 飞扑到**更近的那一侧屏幕边缘**（不是「离回避区中心远一点」——
+            # 后者在 420×160 的区里只是原地挪动，看着像原地踏步）。
+            # 用**宠物当前所在显示器**的工作区边界，多显示器下往它自己那块屏
+            # 的边飞，而不是主屏的边。
+            # Leap to the nearer screen edge (not "further from the zone
+            # centre" — inside a 420x160 zone that is just shuffling on the
+            # spot).  Uses the work area of the monitor the pet is *on*, so a pet
+            # on the second screen leaps to that screen's edge.
+            _wa = self.shared_env.work_area_at(m.anchor.x, m.anchor.y)
+            m._avoid_dir = self.avoid.escape_direction(
+                m.anchor.x, m.anchor.y, _wa.left, _wa.right)
+            # 目标点落在边缘**内侧一点**，别贴到屏幕外或正好压着边框。
+            # Aim a little inside the edge, not on it: exactly at the border the
+            # pet looks like it is clipped to the screen.
+            m._avoid_target_x = (_wa.left + 64 if m._avoid_dir < 0
+                                 else _wa.right - 64)
             m._avoid_in = True
-            dir_hint = m._avoid_dir or 1
-            m.set_look_right(dir_hint > 0)
-            # 打断当前动作：正蹲在输入框上不动的话，等它自己跑完当前动作才
-            # 排队，会让它在用户打字期间一直杵在那里。
+            m.set_look_right(m._avoid_dir > 0)
+            # 这里**打断一次**：宠物可能正蹲着不动（那正是它压在输入区上的
+            # 样子），不打断就要等它当前动作跑完才换，那期间它一直杵在框上。
+            # ⛔ 但**只打断这一次** —— 后续每帧再打断就是 1.0.10 那个
+            # 「每帧重置动画 → 原地踏步 + 反复转向」的 bug。
+            # Interrupt *once*: the pet may be sitting still on the input box.
+            # Never again on later ticks (see above).
             self._force_behavior(m, name, interrupt=True)
+            # **继续循环**，让每一只压在区里的宠物都飞出去 —— 用户要的是
+            # 「把所有宠物都收到屏幕边缘去」，不是让一只先走。
+            # 冷却时刻只在**本次调用首次触发**时记，于是它们在同一帧一起动，
+            # 不会一只一只先后跳。
+            # Keep looping: **every** pet inside the zone leaps out.  The
+            # cooldown is stamped once per call, so they all move on the same
+            # tick instead of trickling out one at a time.
+            if not _stamped:
+                self._avoid_last_flee = _now
+                _stamped = True
 
     def _clear_avoid_dirs(self):
-        """宠物离开回避区（或功能关闭）时清掉已定的逃跑方向。/ Clear pinned flee dirs."""
+        """宠物离开回避区（或功能关闭）时清掉回避状态。/ Clear the flee state."""
         for m in self.mascots:
-            if getattr(m, "_avoid_in", False) or getattr(m, "_avoid_dir", 0):
+            if (getattr(m, "_avoid_in", False) or getattr(m, "_avoid_dir", 0)
+                    or getattr(m, "_avoid_target_x", None) is not None):
                 m._avoid_in = False
                 m._avoid_dir = 0
+                m._avoid_target_x = None
 
     # ------------------------------------------------------------------
     # 行为队列 / behaviour queue

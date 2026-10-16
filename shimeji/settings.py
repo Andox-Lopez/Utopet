@@ -123,7 +123,7 @@ DEFAULTS = {
     # back — the very reason this feature shipped disabled.
     "idle_gather_max_sec": 60,
     # ── 输入回避（1.0.10）────────────────────────────────────────────
-    # 用户打字时，宠物不该跑到输入框/输入法候选窗上压着。
+    # 用户打字时，宠物会飞扑到左/右侧屏幕边缘（挑更近的那边）躲起来。
     # ⚠️ 精确的「输入框位置」在现代应用里**拿不到**（Firefox 实测 67 次采样
     # 全 0、Chrome 全 0）—— 它们自己画光标，不提供系统 caret。所以这里的
     # 语义是「光标附近」，不是「输入框附近」；输入框不在光标处时会偏。
@@ -131,7 +131,14 @@ DEFAULTS = {
     # The *exact* input-box rect is unavailable on modern apps (measured: 67/67
     # samples zero in Firefox, all zero in Chrome) because they draw their own
     # caret.  So this means "near the cursor", not "near the input box".
-    "avoid_input": True,
+    #
+    # ⚠️ **默认关闭**。1.0.10 首发时是 True，收到「宠物凭空行走 + 反复转向」
+    # 的反馈后关掉的。1.0.11 的实现改成「飞扑到更近的屏幕边缘」，方向不再
+    # 每帧重算、不再打断当前动作 —— 那两个才是原症状的真正原因。
+    # Off by default.  1.0.10 shipped this on and produced reports of pets
+    # walking and turning on their own; 1.0.11 rewrote the flee to leap to
+    # the nearer screen edge instead.
+    "avoid_input": False,
     # 回避区的半宽 / 半高（逻辑像素）。默认 210×80 —— 覆盖一行输入框加候选窗。
     # Half-width/half-height of the zone; 210x80 covers one input line plus an
     # IME candidate list.
@@ -142,6 +149,14 @@ DEFAULTS = {
     # How long keyboard activity keeps the zone alive.  1.5 s: shorter makes the
     # pet drift back mid-typing, longer leaves it hiding after you're done.
     "avoid_input_typing_ms": 1500,
+    # 飞扑完成后多久才可能再飞（秒）。⚠️ 冷却期里宠物**照常自由活动** ——
+    # 这个时长只是「多久之后它才可能因为新的一次打字而再飞一次」，
+    # 不是「多久恢复活动」。设 0 = 每次符合条件都飞。
+    # ⚠️ 反复飞会变成往复踱步（飞到边 → 仍在区内 → 又飞到另一边），所以别设太小。
+    # How long before a pet may flee again, in seconds.  During the cooldown it
+    # lives normally; this only stops it re-fleeing on the same ground.  0 = no
+    # cooldown.  Too small makes the pet pace left-right.
+    "avoid_flee_cooldown_sec": 30,
     # 窗口 / windows
     "titles": [],                     # 窗口标题过滤 / window title filter
     "window_offset": [0, 0, 0, 0],    # X / Y / 宽 / 高 偏移 / rect offsets

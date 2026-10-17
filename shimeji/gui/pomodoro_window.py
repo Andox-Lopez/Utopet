@@ -60,16 +60,19 @@ class PomodoroWindow(QWidget):
         self.manager = manager
         self.t = get_i18n()
 
-        s = manager.settings
-        # 时长从设置里来；用户在设置里改了数，这里下一段就会用新值。
-        # Durations come from settings; a change applies from the next phase.
-        self.pom = Pomodoro(
-            work_min=int(s.get("pomodoro_work_min", 25)),
-            break_min=int(s.get("pomodoro_break_min", 5)),
-            long_break_min=int(s.get("pomodoro_long_break_min", 15)),
-            long_every=int(s.get("pomodoro_long_every", 4)),
-            on_event=self._on_event,
-        )
+        # ⭐ 计时器**必须共用 manager 的那只实例**，绝对不要在这里再建一个：
+        # 曾经两边各建各的 —— 窗口里真正跑的这只回调调了
+        # `manager.pomodoro_event()`（Manager 上根本不存在的方法），
+        # AttributeError 被两层 try/except 静默吞掉：🍅 计数照常涨，
+        # 但「今日统计」永远 0、托盘气泡 / 宠物联动 / 台词全都没触发；
+        # 而设置里改时长改的是 manager 那只死实例，窗口永远用旧时长。
+        # 单一实例，两条路自然都通。
+        # The window MUST share the manager's Pomodoro instance, never build
+        # its own: the split used to silently swallow AttributeErrors (a
+        # callback to a method that does not exist), so the counter ticked up
+        # while today's stats / tray balloons / pet reactions never fired, and
+        # duration changes applied to the instance nobody was ticking.
+        self.pom = manager.pomodoro
 
         self.setWindowIcon(app_icon())
         self.setWindowTitle(self.t.t("pomo.title"))
@@ -413,19 +416,6 @@ class PomodoroWindow(QWidget):
         if streak >= 2:
             text += " · " + t.t("pomo.streak").format(streak)
         self.stats_label.setText(text)
-
-    # ------------------------------------------------------------------
-    def _on_event(self, event: str, pom: Pomodoro):
-        """阶段切换 → 托盘气泡 + 宠物反应。由逻辑层回调，别在这里做判断。
-        Phase transition -> tray balloon + pet reaction.  Callback only."""
-        try:
-            self.manager.pomodoro_event(event, pom)
-        except Exception:  # noqa: BLE001
-            # 通知失败不该影响计时（逻辑层同样兜了一层，这里是第二道）。
-            # A failing notification must not take the clock down; the logic
-            # layer guards too, this is the second net.
-            from ..engine.manager import log
-            log.exception("pomodoro notification failed")
 
     # ------------------------------------------------------------------
     def closeEvent(self, event):  # noqa: N802 - Qt override

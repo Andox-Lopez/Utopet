@@ -40,10 +40,20 @@ def section(t):
 
 # ── ① 版本一致性 ────────────────────────────────────────────────────
 section("版本号一致性检查")
+# ⭐ 版本号**一律动态取**，绝不写死：写死 "1.0.10" 的那版在升到 1.1.0 时
+# 五项全假红（替换不到目标字符串，变异测试根本没生效）。
+# 此处独立从 __init__.py 源码里抓一遍，与 rel.current_version() 互为对照 ——
+# 两个「读法」一致才证明它真在读文件而不是返回常量。
+# Version numbers are ALWAYS read dynamically: hard-coding them makes every
+# mutation test below silently no-op (and fail) on the next version bump.
 probs = rel.version_consistency()
 check(not probs, "当前仓库版本号三处一致", str(probs))
-check(rel.current_version() == "1.0.10",
-      "版本号从 __init__.py 读出来", rel.current_version())
+_init_src = open(os.path.join(ROOT, "shimeji", "__init__.py"),
+                 encoding="utf-8").read()
+VER = re.search(r'__version__\s*=\s*"(.+?)"', _init_src).group(1)
+check(rel.current_version() == VER,
+      "版本号从 __init__.py 读出来",
+      "%s vs 源码 %s" % (rel.current_version(), VER))
 
 # 造一个假的仓库副本，把 .iss 改成不一致，看能不能抓到
 # ⚠️⛔ **`rel.ROOT` 必须在整个版本一致性测试期间保持指向副本**，
@@ -68,23 +78,23 @@ try:
         open(os.path.join(tmp, "installer", "Utopet.iss"), "w",
              encoding="utf-8").write(text)
 
-    # AppVersion 对不上
-    _write_iss(_iss_orig.replace('#define AppVersion "1.0.10"',
-                                 '#define AppVersion "1.0.9"'))
+    # AppVersion 对不上（换成任何一个别的版本号都该被抓到）
+    _write_iss(_iss_orig.replace('#define AppVersion "%s"' % VER,
+                                 '#define AppVersion "9.9.9"'))
     probs = rel.version_consistency()
     check(any("AppVersion" in p for p in probs),
           ".iss 的 AppVersion 对不上时能抓到", str(probs))
 
     # VersionInfoVersion 不是四段数字
-    _write_iss(_iss_orig.replace("VersionInfoVersion=1.0.10.0",
-                                 "VersionInfoVersion=1.0.10"))
+    _write_iss(_iss_orig.replace("VersionInfoVersion=%s.0" % VER,
+                                 "VersionInfoVersion=%s" % VER))
     probs = rel.version_consistency()
     check(any("四段数字" in p for p in probs),
           "VersionInfoVersion 不是四段数字时能抓到", str(probs))
 
     # VersionInfoVersion 段数对但版本对不上
-    _write_iss(_iss_orig.replace("VersionInfoVersion=1.0.10.0",
-                                 "VersionInfoVersion=1.0.9.0"))
+    _write_iss(_iss_orig.replace("VersionInfoVersion=%s.0" % VER,
+                                 "VersionInfoVersion=9.9.9.0"))
     probs = rel.version_consistency()
     check(any("VersionInfoVersion" in p for p in probs),
           "VersionInfoVersion 版本对不上时能抓到", str(probs))
@@ -94,7 +104,7 @@ try:
     cl = os.path.join(tmp, "CHANGELOG.md")
     c = open(cl, encoding="utf-8").read()
     open(cl, "w", encoding="utf-8").write(
-        c.replace("## [1.0.10]", "## [9.9.9]", 1))
+        c.replace("## [%s]" % VER, "## [9.9.9]", 1))
     probs = rel.version_consistency()
     check(any("CHANGELOG" in p for p in probs),
           "CHANGELOG 顶部版本对不上时能抓到", str(probs))
@@ -105,39 +115,52 @@ finally:
 
 # ── ② commit message ───────────────────────────────────────────────
 section("commit message 生成")
-msg = rel.commit_message("1.0.10", None)
+# ⭐ 先从 CHANGELOG 动态抓出当前版本的加粗标题句，用来对照生成结果 ——
+# 别把「你打字的时候」这类上一版的标题句写死在这里。
+_cl_text = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
+_m = re.search(r"^##\s*\[%s\][^\n]*\n+(.*)" % re.escape(VER), _cl_text,
+               re.M | re.S)
+_tagline = ""
+for _ln in (_m.group(1) if _m else "").splitlines():
+    _ln = _ln.strip()
+    if _ln.startswith("**"):
+        _tagline = re.sub(r"[*_`]+", "", _ln).strip()
+        break
+check(bool(_tagline), "从 CHANGELOG 动态抓到了这一版的标题句", _tagline)
+msg = rel.commit_message(VER, None)
 print("    -> %s" % msg)
-check("1.0.10" in msg, "message 里带版本号")
+check(VER in msg, "message 里带版本号")
 check("**" not in msg and "`" not in msg,
       "剥掉了 Markdown 强调符号（commit 列表里很难看）")
 check(msg.startswith("feat: 发布"), "前缀是约定的 feat: 发布")
 # 抓到的是 CHANGELOG 里的**加粗标题句**，不是后面的解释段落
-check("你打字的时候" in msg,
+check(_tagline.split("。")[0] in msg,
       "用的是 CHANGELOG 里那一版的标题句，不是解释段落", msg)
 check(len(msg) < 80, "长度克制（git log 一行放得下）", "%d 字符" % len(msg))
-custom = rel.commit_message("1.0.10", "我的自定义 message")
+custom = rel.commit_message(VER, "我的自定义 message")
 check(custom == "我的自定义 message", "-m 能覆盖自动生成的")
 
 # ── ③ Release 说明抽取 ─────────────────────────────────────────────
 section("Release 说明 = CHANGELOG 那一节的正文")
 notes = os.path.join(tmp, "_notes.md")
-rel._write_notes("1.0.10", notes)
+rel._write_notes(VER, notes)
 body = open(notes, encoding="utf-8").read()
 print("    前 3 行：")
 for line in body.splitlines()[:3]:
     print("      %s" % line[:70])
 check(len(body) > 200, "抽到了实质内容", "%d 字符" % len(body))
-check("## [1.0.10]" not in body,
+check("## [%s]" % VER not in body,
       "不包含版本标题行本身（GitHub 会单独显示标题）")
 check("1.0.9" not in body.split("###")[0],
       "不串到上一版的内容")
-check("输入回避" in body or "输入" in body,
-      "内容确实是 1.0.10 的（提到输入回避）")
-# 下一版不能漏
+# 内容确实是这一版的：标题句（本版主题）真的出现在正文里
+check(_tagline.split("。")[0] in body,
+      "内容确实是 %s 的（含本版标题句）" % VER)
+# 上一版（1.0.9）不能漏：它的正文不该混进本版内容
 rel._write_notes("1.0.9", notes)
 b9 = open(notes, encoding="utf-8").read()
-check("输入回避" not in b9,
-      "取 1.0.9 时不会混入 1.0.10 的内容")
+check("输入回避" not in b9 and _tagline.split("。")[0] not in b9,
+      "取 1.0.9 时不会混入更新版本的内容")
 os.remove(notes)
 
 # ── ④ 脏文件解析 ───────────────────────────────────────────────────
@@ -194,7 +217,7 @@ check(publish_body.index("--dry-run：到此为止") < _i_push,
 # 真跑一次 dry-run，确认它一个字节都没改
 _before = rel.dirty_files()
 _before_ahead = rel.upstream_divergence()[0]
-rel.publish("1.0.10", "x.exe", dry=True, assume_yes=False, message=None)
+rel.publish(VER, "x.exe", dry=True, assume_yes=False, message=None)
 _after = rel.dirty_files()
 _after_ahead = rel.upstream_divergence()[0]
 check(_before == _after,

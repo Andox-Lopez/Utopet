@@ -105,6 +105,19 @@ def test_state_machine():
     check(p4.phase == Pomodoro.IDLE and p4.remaining == 0,
           "重置回空闲", p4.phase)
 
+    # ⭐ 回归（1.0.11）：reset() 必须**真的清零完成数**。docstring 一直写着
+    # 「计数清零」，代码却漏了那一行 —— 点了「重置」🍅 还挂在上一轮的 ×N 上
+    # 永远不动（用户实测报的那个「一直显示 ×2」）。
+    p8 = Pomodoro(work_min=1, break_min=1)
+    p8.start()
+    p8._deadline = time.monotonic() - 0.01
+    p8.tick()
+    check(p8.completed == 1, "先完成一个番茄，完成数 = 1", str(p8.completed))
+    p8.reset()
+    check(p8.phase == Pomodoro.IDLE and p8.completed == 0,
+          "重置后完成数清零（这条曾在旧代码下必挂）",
+          "%s / %s" % (p8.phase, p8.completed))
+
     section("番茄状态机：配置与健壮性")
     p5 = Pomodoro()
     p5.set_durations(10, 3, 9, 6)
@@ -177,6 +190,35 @@ def test_window(app):
               "切到休息后显示 05:00（剩余 = 整段 5 分钟）",
               w.time_label.text())
         check(w.pom.completed == 1, "窗口的完成数跟着涨", str(w.pom.completed))
+
+        # ⭐ 回归（1.0.11 统计丢失）：窗口必须**共用** manager 的 Pomodoro
+        # 实例。曾经各建各的，窗口事件的回调调了一个不存在的方法
+        # （`manager.pomodoro_event`），AttributeError 被静默吞掉 ——
+        # 🍅 计数照常涨，统计却永远「今日 0 个」。共用后 work_done 会真的
+        # record() 进 mgr.pomostats（上面已指向临时目录，不污染真实 data\）。
+        check(w.pom is mgr.pomodoro,
+              "窗口用的是 manager 的计时器实例（共用，不是各建各的）")
+        row = mgr.pomostats.summary()
+        check(row["completed"] == 1 and row["focus_sec"] == 1 * 60,
+              "work_done 后统计真的记了一笔（这条曾在旧代码下必挂）",
+              str(row))
+        check("1 个" in w.stats_label.text(),
+              "今日统计标签跟着刷新", w.stats_label.text())
+
+        # ⭐ 回归：点「重置」后 🍅 计数要归零（共用实例，所以看 manager 那只
+        # 就行）。旧代码 reset() 不清 completed → 界面永远停在 ×N。
+        w.btn_reset.click()
+        check(w.pom is mgr.pomodoro and mgr.pomodoro.completed == 0,
+              "点「重置」后完成数清零（曾一直停在上一轮的 ×N）",
+              str(mgr.pomodoro.completed))
+        check(w.pom.phase == w.pom.IDLE, "重置回空闲状态", w.pom.phase)
+        check("🍅" not in w.count_label.text(),
+              "重置后不再显示 🍅 × N", w.count_label.text())
+
+        # 重置后统计**不能**被清掉 —— 那是历史，重置只针对当前这一轮
+        check(mgr.pomostats.summary()["completed"] == 1,
+              "重置当前计时不影响已有统计（历史要留着）",
+              str(mgr.pomostats.summary()))
 
         w.center_on_cursor()
         from PySide6.QtWidgets import QApplication

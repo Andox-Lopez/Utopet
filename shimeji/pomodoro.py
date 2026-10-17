@@ -190,6 +190,12 @@ class Pomodoro:
         self._phase = self.IDLE
         self._deadline = None
         self._remaining = 0.0
+        # ⚠️ 这条以前**漏了** —— docstring 写着「计数清零」，代码却只改阶段，
+        # 于是点了「重置」🍅 计数还挂在上一轮的 ×2 上不动。文档承诺了就得做。
+        # This line used to be missing: the docstring promised a zeroed counter
+        # while the code only reset the phase, so 🍅 stayed at the previous
+        # session's count after pressing Reset.
+        self.completed = 0
         self._fire("reset")
 
     def tick(self) -> dict:

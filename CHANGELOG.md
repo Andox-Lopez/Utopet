@@ -10,6 +10,42 @@
 
 ---
 
+## [1.1.0] — 2026-10-17
+
+**番茄钟统计不再失灵。**
+**Pomodoro stats now keep count.**
+
+### 🐛 修复 Fixed
+
+- **「今日统计」永远显示 0。** 番茄时钟窗口和引擎里各养了一只计时器：窗口里
+  真正在跑的那只，阶段切换事件被送到了一个**不存在的方法**上，异常又被两层
+  兜底静默吞掉 —— 于是 🍅 计数照常涨，「今日 0 个 · 0 小时 00 分」却永远
+  不动，托盘气泡、宠物「跳一下」提醒、气泡台词也全都没触发；设置里改时长
+  改的还是那只没人跑的死实例。现在窗口直接**共用引擎的唯一实例**，一条线全通。
+  **Today's stats stayed at zero.**  The Pomodoro window and the engine each
+  kept their own timer, and the window's phase events were dispatched to a
+  method that does not exist, with the exception silently swallowed twice.
+  The tomato counter ticked up while today's totals, tray balloons and pet
+  reactions never fired, and duration changes applied to the idle duplicate.
+  The window now shares the engine's single instance.
+- **「重置」不清零 🍅 计数。** 重置按钮写着「回到空闲并清零计数」，代码却漏了
+  清零那一行 —— 点了重置，🍅 还停在上一轮的 ×N。现在真的清零；**历史统计不受
+  影响**，重置只针对当前这一轮。
+  **Reset did not zero the counter.**  The button promised a zeroed counter but
+  the code only reset the phase, so pressing Reset left the pomodoro count at
+  the previous session's total.  It now zeroes properly — your history is
+  untouched; Reset only clears the current round.
+
+### 测试 Tests
+
+- `verify_pomodoro` 39 → **66 项**：新增「work_done 后统计真的记了一笔」
+  「窗口与引擎共用同一实例」「重置后计数归零且不影响历史」等 7 条针对性断言，
+  并实测过它们**在修复前的代码上全部失败**（旧断言只查「回调不抛异常」，
+  所以这个 bug 从 1.0.8 一直绿到被用户发现）。
+  `verify_pomodoro` grew from 39 to 66 checks; the new assertions were verified
+  to fail against the pre-fix code, where the old ones only checked "the
+  callback does not raise".
+
 ## [1.0.10] — 2026-10-15
 
 **你打字的时候，宠物会让开。**

@@ -458,9 +458,9 @@ class _IEFollowMixin:
 
     原版 `WalkWithIE` / `FallWithIE` 在 `init()` 里保存 `getActiveIE()` 的引用，
     之后每帧都是「把宠物这一帧的位移量加到那个窗口上」。如果每帧都重新读
-    `activeIE`（它跟着鼠标走），会出现两个问题：
+    `activeIE`（它跟着前台窗口走），会出现两个问题：
 
-    1. 宠物带着窗口一起往下掉的过程中，鼠标停在别处 → `activeIE` 变成另一个
+    1. 宠物带着窗口一起往下掉的过程中，用户切了个窗口 → `activeIE` 变成另一个
        窗口 → 位移量被加到不相干的窗口上，宠物自己却在原地；
     2. hwnd 每帧一变，`_ie_last` 就每帧重置，`dx/dy` 永远算不出来（恒为 0），
        窗口看起来「跟不动」。
@@ -469,10 +469,10 @@ class _IEFollowMixin:
     位移一直被重置。锁定 hwnd 之后，窗口被关掉（`IsWindow` 失败）才释放。
 
     The target window is **locked once at init** and followed for the rest of
-    the action.  Re-reading `activeIE` every tick (it follows the mouse) caused
-    the displacement to be applied to an unrelated window, and reset the
-    reference position every frame so the delta was always 0 — which is exactly
-    the reported "window interaction stops working".
+    the action.  Re-reading `activeIE` every tick (it follows the foreground
+    window) caused the displacement to be applied to an unrelated window, and
+    reset the reference position every frame so the delta was always 0 — which
+    is exactly the reported "window interaction stops working".
     """
 
     def _ie_init(self):
@@ -545,7 +545,8 @@ class ThrowIE(_Animated):
     参数 / parameters: 初速X, 初速Y, 重力
 
     目标窗口同样在 init 时锁定。原版 `ThrowIE` 也是这么做的：如果每帧重读
-    `activeIE`，扔的过程中鼠标一动就会换成别的窗口，窗口被「甩到别的窗口上」。
+    `activeIE`，扔的过程中用户切个窗口就会换成别的窗口，窗口被「甩到别的
+    窗口上」。
     """
 
     def init(self):

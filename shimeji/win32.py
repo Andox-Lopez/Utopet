@@ -31,6 +31,7 @@ from ctypes import wintypes
 __all__ = [
     "get_work_area", "get_screen_rect", "get_cursor_pos",
     "list_windows", "window_at", "move_window", "get_window_title",
+    "get_foreground_window",
     "enum_monitors", "set_dpi_scale", "dpi_scale", "is_zoomed",
     "set_app_user_model_id", "APP_ID", "make_taskbar_window", "window_rect",
     "get_input_caret_rect", "visible_ime_rects", "key_pressed_since",
@@ -342,6 +343,20 @@ def get_cursor_pos() -> tuple[int, int]:
     pt = wintypes.POINT()
     _user32.GetCursorPos(ctypes.byref(pt))
     return _l(pt.x), _l(pt.y)
+
+
+def get_foreground_window() -> int:
+    """
+    当前前台（活动）窗口的句柄 / Handle of the foreground (active) window.
+
+    没有前台窗口时返回 0（例如正在切换桌面、锁屏）。
+    Returns 0 when there is none, e.g. while switching desktops or on the lock
+    screen.
+    """
+    try:
+        return int(_user32.GetForegroundWindow() or 0)
+    except OSError:
+        return 0
 
 
 def get_window_title(hwnd: int) -> str:

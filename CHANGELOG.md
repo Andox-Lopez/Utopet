@@ -10,6 +10,25 @@
 
 ---
 
+## [未发布]
+
+**宠物只和前台窗口互动。**
+**The pet only interacts with the foreground window.**
+
+### 🔧 变更 Changed
+
+- **窗口互动对象从「光标下的窗口」改成「前台（活动）窗口」。** 以前宠物跟着光标
+  挑窗口：鼠标随手停在一个后台窗口上，它就跑去爬那个你根本没在用的窗口；打字时
+  光标一挪，正在爬的窗口还会中途换掉。现在只有**当前前台窗口**参与爬窗、扛窗、
+  扔窗，光标停在哪都不影响。最大化 / 全屏窗口仍然不参与（既有规则不变）。
+  **Window interaction now targets the foreground (active) window** instead of
+  whatever sits under the cursor.  The pet used to climb whichever background
+  window the mouse happened to rest on, and could even switch targets mid-climb.
+  Only the active window takes part now; maximised / full-screen windows stay
+  excluded as before.
+
+---
+
 ## [1.1.0] — 2026-10-17
 
 **番茄钟统计不再失灵。**

@@ -191,18 +191,45 @@ def main() -> int:
     # true for a mascot standing on the floor.
     env = mgr.shared_env
 
-    def with_windows(rects):
-        """临时替换窗口列表，返回恢复函数 / Swap the window list, return a restorer."""
+    def with_windows(rects, fg=0):
+        """
+        临时替换窗口列表与「前台窗口」，返回恢复函数。
+        Swap the window list *and* the foreground window; return a restorer.
+
+        `activeIE` 只看前台窗口（不再跟随光标），所以测试必须同时说明
+        「现在哪个窗口在前台」——`fg` 是 rects 的下标，None 表示没有前台窗口。
+        `activeIE` follows the foreground window now, not the cursor, so a test
+        has to say which window is in front; `fg` indexes `rects`, None = none.
+        """
         saved_w = list(env.windows)
         saved_m = dict(env._window_map)
+        saved_fg = env.__dict__.get("_foreground_hwnd")
+        saved_enum = env._enumerate
         env.windows = []
         env._window_map = {}
         for i, (l, t, r, b) in enumerate(rects):
             a = Area(l, t, r, b, hwnd=990000 + i)
             env.windows.append(a)
             env._window_map[a.hwnd] = a
-        return lambda: (setattr(env, "windows", saved_w),
-                        setattr(env, "_window_map", saved_m))
+            env._titles[a.hwnd] = "Fake-%d" % i
+        target = 0 if fg is None else 990000 + fg
+        env._foreground_hwnd = lambda: target
+        # 每帧 `tick()` 里的 `refresh()` 会重新枚举真实窗口，把假窗口表冲掉；
+        # 这里让枚举变空操作，假窗口才留得住。
+        # `refresh()` inside every `tick()` re-enumerates the real windows and
+        # would wipe the fake list, so make enumeration a no-op here.
+        env._enumerate = lambda *a, **k: None
+
+        def _restore():
+            env.windows = saved_w
+            env._window_map = saved_m
+            env._enumerate = saved_enum
+            if saved_fg is None:
+                env.__dict__.pop("_foreground_hwnd", None)
+            else:
+                env._foreground_hwnd = saved_fg
+
+        return _restore
 
     full_rects = [
         (0, 0, 1920, 1032),          # 真全屏
@@ -221,17 +248,17 @@ def main() -> int:
     try:
         mgr.dismiss_all()
         pm = mgr.summon(Pt(wa.left + 400, wa.bottom))
-        env._update_active_ie(wa.left + 960, wa.top + 500)
+        env._update_active_ie()
         em = pm.env
         check(not em.activeIE.visible,
-              "光标在全屏窗口上时 activeIE 不可用（不再被它抢占）")
+              "前台是全屏窗口时 activeIE 不可用（不再被它抢占）")
         check(not em.activeIE.bottomBorder.isOn(pm.anchor),
               "站在工作区地面时不再命中「窗口下边」（底部爬行的直接触发条件）")
         check(em.floor.isOn(pm.anchor),
               "地面判定仍然正常（工作区底边）")
         seen = set()
         for _ in range(80):
-            env._update_active_ie(wa.left + 960, wa.top + 500)
+            env._update_active_ie()
             mgr.tick()
             a = pm.action
             d = getattr(a, "defn", None) if a is not None else None
@@ -256,9 +283,9 @@ def main() -> int:
     try:
         mgr.dismiss_all()
         pm = mgr.summon(Pt(500, 179))
-        env._update_active_ie(500, 400)
+        env._update_active_ie()
         em = pm.env
-        check(em.activeIE.visible, "普通窗口下activeIE 仍然可用（没误伤）")
+        check(em.activeIE.visible, "普通窗口在前台时 activeIE 仍然可用（没误伤）")
         check(em.activeIE.topBorder.isOn(pm.anchor),
               "站在普通窗口顶边时 topBorder 命中（爬窗功能保留）")
         nm = next((n for n in ("IEの天井を歩く", "IEの天井を走る")
@@ -267,12 +294,52 @@ def main() -> int:
             mgr._force_behavior(pm, nm, interrupt=True)
             walk = [(round(pm.anchor.x), round(pm.anchor.y))]
             for _ in range(80):
-                env._update_active_ie(500, 400)
+                env._update_active_ie()
                 mgr.tick()
                 walk.append((round(pm.anchor.x), round(pm.anchor.y)))
             check(abs(walk[-1][0] - walk[0][0]) > 40,
                   "普通窗口顶边仍能正常行走（没误伤）",
                   f"x {walk[0][0]} -> {walk[-1][0]}")
+    finally:
+        restore()
+        mgr.dismiss_all()
+
+    # 只认前台窗口：光标飘到别的窗口上也不跟过去
+    # Only the foreground window: a cursor on another window changes nothing.
+    restore = with_windows([(100, 100, 600, 400), (900, 300, 1500, 800)], fg=0)
+    try:
+        env._update_active_ie()
+        check(env.activeIE.visible and env.activeIE.hwnd == 990000,
+              "activeIE = 前台窗口（rects[0]）",
+              "hwnd=%s" % env.activeIE.hwnd)
+        # 把光标挪到第二个窗口里，activeIE 必须完全不动
+        # ⚠️ 连 dx/dy 一起存 —— 只恢复 x/y 会让下游的「输入回避区」按残留
+        # 速度算出 421x180 而不是 420x160（踩过一次）。
+        old_cursor = (env.cursor.x, env.cursor.y, env.cursor.dx, env.cursor.dy)
+        env.cursor.set(1200, 500)
+        env._update_active_ie()
+        check(env.activeIE.hwnd == 990000,
+              "光标停在别的窗口上时 activeIE 不跟着换（只跟前台窗口互动）",
+              "hwnd=%s" % env.activeIE.hwnd)
+        env.cursor.x, env.cursor.y, env.cursor.dx, env.cursor.dy = old_cursor
+
+        # 前台换成第二个窗口 -> 立刻切过去（这是"当前在用的窗口"）
+        env._foreground_hwnd = lambda: 990001
+        env._update_active_ie()
+        check(env.activeIE.hwnd == 990001,
+              "前台窗口切换后 activeIE 跟着切",
+              "hwnd=%s" % env.activeIE.hwnd)
+
+        # 前台是本程序自己的窗口（设置面板/番茄钟）—— 不在窗口表里 -> 没有
+        env._foreground_hwnd = lambda: 12345
+        env._update_active_ie()
+        check(not env.activeIE.visible,
+              "前台是本程序窗口（不在可交互列表）时 activeIE 不可见")
+
+        # 没有前台窗口（切换桌面/锁屏）-> 同样没有
+        env._foreground_hwnd = lambda: 0
+        env._update_active_ie()
+        check(not env.activeIE.visible, "没有前台窗口时 activeIE 不可见")
     finally:
         restore()
         mgr.dismiss_all()
@@ -1984,16 +2051,18 @@ def main() -> int:
         _shutil.rmtree(_d16, ignore_errors=True)
 
     # ------------------------------------------------------------------
-    section("1.0.9 铺满窗口挡住时，不再退到它身后的窗口")
-    # 光标下最上层就是一块铺满工作区的窗口 → 正确的答案是「没有可交互窗口」。
+    section("1.0.9 前台是铺满窗口时，不再退到它身后的窗口")
+    # 前台就是那块铺满工作区的窗口 → 正确的答案是「没有可交互窗口」。
     # 以前会继续往下枚举，挑到一个被它完全盖住的窗口，于是宠物在一条**看不见
     # 的边**上爬（用户看到的是「宠物在半空中凭空做出爬窗动作」）。
     _env17 = mgr.shared_env
     _w17 = list(_env17.windows)
     _map17 = dict(_env17._window_map)
     _titles17 = dict(_env17._titles)
+    _fg17 = _env17.__dict__.get("_foreground_hwnd")
+    _enum17 = _env17._enumerate
 
-    def _set_windows17(rects):
+    def _set_windows17(rects, fg=0):
         _env17.windows = []
         _env17._window_map = {}
         for _i, _r in enumerate(rects):
@@ -2001,36 +2070,45 @@ def main() -> int:
             _env17.windows.append(_a17)
             _env17._window_map[_a17.hwnd] = _a17
             _env17._titles[_a17.hwnd] = "Fake-%d" % _i
+        _env17._foreground_hwnd = lambda: 997000 + fg
+        # 别让 tick() 里的 refresh() 重新枚举真实窗口把假表冲掉
+        # Keep refresh() from re-enumerating the real windows over the fakes.
+        _env17._enumerate = lambda *a, **k: None
 
     try:
-        # 上层铺满工作区，下层一个普通窗口，两个都盖住 (500, 400)
+        # 前台是铺满工作区的窗口，它身后还有一个普通窗口
         _set_windows17([(0, 0, 1920, 1032), (300, 300, 900, 800)])
-        _env17._update_active_ie(500, 400)
+        _env17._update_active_ie()
         check(not _env17.activeIE.visible,
-              "最上层是铺满窗口时 activeIE 不可见（不再挑它身后的窗口）",
+              "前台是铺满窗口时 activeIE 不可见（不再挑它身后的窗口）",
               "hwnd=%s" % getattr(_env17.activeIE, "hwnd", None))
         check(_env17.blocked_ie_title == "Fake-0",
               "被跳过的铺满窗口记在 blocked_ie_title 里（排查用）",
               repr(_env17.blocked_ie_title))
 
-        # 没有铺满窗口挡着时，普通窗口照常可交互（没误伤爬窗）
+        # 普通窗口在前台时照常可交互（没误伤爬窗）
         _set_windows17([(300, 300, 900, 800)])
-        _env17._update_active_ie(500, 400)
+        _env17._update_active_ie()
         check(_env17.activeIE.visible and _env17.activeIE.hwnd == 997000,
               "没有铺满窗口时普通窗口仍然可交互",
               "%s / %s" % (_env17.activeIE.visible, _env17.activeIE.hwnd))
         check(_env17.blocked_ie_title == "",
               "没有跳过任何窗口时 blocked_ie_title 清空")
 
-        # 只有铺满窗口时同样算「被挡住」，并把名字记下来
+        # 只有铺满窗口时同样算「被跳过」，并把名字记下来
         _set_windows17([(0, 0, 1920, 1032)])
-        _env17._update_active_ie(960, 500)
+        _env17._update_active_ie()
         check(not _env17.activeIE.visible, "只有铺满窗口时 activeIE 不可见")
         check(_env17.blocked_ie_title == "Fake-0", "此时也记下了它的名字")
     finally:
         _env17.windows = _w17
         _env17._window_map = _map17
         _env17._titles = _titles17
+        _env17._enumerate = _enum17
+        if _fg17 is None:
+            _env17.__dict__.pop("_foreground_hwnd", None)
+        else:
+            _env17._foreground_hwnd = _fg17
 
     # ------------------------------------------------------------------
     section("1.0.9 会话恢复：屏幕外的存档位置会被夹回来")

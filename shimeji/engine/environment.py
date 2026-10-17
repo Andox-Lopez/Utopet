@@ -475,7 +475,7 @@ class Environment:
         self.cursor.set(cx, cy)
 
         self._enumerate(refresh_titles=force or self._tick % self.TITLE_REFRESH_TICKS == 1)
-        self._update_active_ie(cx, cy)
+        self._update_active_ie()
 
     def _matches_filter(self, title: str) -> bool:
         if not self.titles_filter:
@@ -557,54 +557,59 @@ class Environment:
         # true for a mascot standing on the floor.
         return span_x and a.bottom >= wa.bottom - 2
 
-    def _update_active_ie(self, cx, cy):
+    def _update_active_ie(self):
         """
-        activeIE = 光标所在窗口 / The window currently under the cursor.
+        activeIE = **前台（活动）窗口** / The **foreground (active)** window.
+
+        只看前台窗口，不再跟着光标走。光标扫过别的窗口（后台的聊天窗口、
+        资源管理器、视频）时，宠物不该跑过去爬它 —— 用户说的是「宠物只会和
+        最前台窗口互动」。原版按光标选窗口，在「鼠标随手乱放」的时代没问题，
+        但现在桌面上常驻十几二十个窗口，光标多半落在**没在用的那个**上。
+
+        Only the foreground window counts; the cursor no longer decides.  The
+        original picked the window under the cursor, which was fine when a
+        desktop held a handful of windows — today the cursor usually rests on
+        some background window, and the pet would run off to climb *that*.
 
         **跳过全屏/铺满窗口。** 这是「窗口底部爬行」误触发的根因：
-        桌面上那个铺满工作区的窗口（QQ 最大化、游戏、贴屏视频）永远在光标下，
-        于是 `activeIE` 一直是它。而它的 `bottom` 恰好压在工作区底边上，
-        宠物站在地面时 `activeIE.bottomBorder.isOn(anchor)` **恒为真**，
-        Behavior.xml 里那15+ 条 `activeIE.*Border` 条件就会持续命中
-        「IEの下辺を伝う」「IEの天井を歩く」这类爬行 —— 表现为
-        「全屏窗口会触发一个窗口底部爬行的动画」。
+        前台那个铺满工作区的窗口（QQ 最大化、游戏、贴屏视频）`bottom` 恰好
+        压在工作区底边上，宠物站在地面时 `activeIE.bottomBorder.isOn(anchor)`
+        **恒为真**，Behavior.xml 里那 15+ 条 `activeIE.*Border` 条件就会持续
+        命中「IEの下辺を伝う」「IEの天井を歩く」这类爬行。
 
-        **Full-screen windows are skipped.**  A maximised window sits under the
-        cursor at all times, so `activeIE` would always be it, and its bottom
-        edge coincides with the work-area bottom — making
+        **Full-screen windows are skipped.**  A maximised foreground window's
+        bottom edge coincides with the work-area bottom, making
         `activeIE.bottomBorder.isOn(anchor)` permanently true and firing the
         "crawl along the window bottom" behaviour over and over.
 
-        1.0.9：跳过之后**不再往下找**。以前会继续枚举到后面那个被铺满窗口
-        完全盖住的窗口，于是宠物会在一条**看不见的边**上爬（用户看到的是
-        「宠物在半空中凭空做出爬窗动作」）。铺满窗口之下没有「光标所在的
-        可见窗口」，这时正确的答案是**没有** activeIE。
+        跳过之后**不再往下找**。以前会继续枚举到后面那个被铺满窗口完全盖住的
+        窗口，于是宠物会在一条**看不见的边**上爬（用户看到的是「宠物在半空中
+        凭空做出爬窗动作」）。铺满窗口之下没有「可交互的可见窗口」，这时正确
+        的答案是**没有** activeIE。
 
-        1.0.9: no longer falls through to the windows *behind* it.  It used to
-        keep enumerating and pick a window that the full-screen one completely
-        covers, so the mascot climbed an **invisible edge** — reported as "the
-        pet does climbing animations in mid-air".  There is no visible window
-        under the cursor in that case, so the honest answer is *no* activeIE.
+        No falling through to the windows *behind* it: that produced the
+        reported "the pet does climbing animations in mid-air" on an invisible
+        edge.  Beneath a work-area-filling window there is no visible window to
+        interact with, so the honest answer is *no* activeIE.
+
+        前台窗口是**本程序自己的窗口**（设置面板、番茄钟、任务栏面板）时同样
+        算「没有」—— 它们被 `win32.list_windows()` 排除在外，不在窗口表里。
         """
-        # EnumWindows 按 Z 序自上而下枚举，第一个命中的就是最上层窗口
-        # EnumWindows walks top-to-bottom in Z order, so the first hit is topmost.
         best = None
         blocked = None
-        for a in self.windows:
-            if a.left <= cx <= a.right and a.top <= cy <= a.bottom:
-                # 铺满工作区的窗口不是可交互的「窗口」/ a work-area-filling
-                # window is not an interactable window
-                if self.is_fullscreen_window(a):
-                    blocked = a
-                else:
-                    best = a
-                break
+        hwnd = self._foreground_hwnd()
+        candidate = self._window_map.get(hwnd) if hwnd else None
+        if candidate is not None:
+            if self.is_fullscreen_window(candidate):
+                blocked = candidate
+            else:
+                best = candidate
         title = self._titles.get(blocked.hwnd, "") if blocked is not None else ""
         self.blocked_ie_title = title
         if title != self._blocked_ie_prev:
             self._blocked_ie_prev = title
             if title:
-                log.info("activeIE 跳过铺满窗口 %r（最大化/全屏窗口不参与窗口交互）",
+                log.info("activeIE 跳过铺满窗口 %r（前台窗口最大化/全屏，不参与窗口交互）",
                          title)
         if best is None:
             self.active_ie.visible = False
@@ -613,6 +618,16 @@ class Environment:
             self.active_ie.visible = True
             self.active_ie.hwnd = best.hwnd
             self.active_ie.set_rect(best.left, best.top, best.right, best.bottom)
+
+    def _foreground_hwnd(self) -> int:
+        """
+        取前台窗口句柄 / Read the foreground window handle.
+
+        单独一层是为了让测试能替换它（测试里没有真的前台窗口）。
+        A thin seam so tests can substitute it — they have no real foreground
+        window to point at.
+        """
+        return win32.get_foreground_window()
 
     # ------------------------------------------------------------------
     def window_by_hwnd(self, hwnd):

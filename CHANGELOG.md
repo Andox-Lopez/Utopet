@@ -10,7 +10,7 @@
 
 ---
 
-## [未发布]
+## [1.1.1] — 2026-10-18
 
 **宠物只和前台窗口互动。**
 **The pet only interacts with the foreground window.**

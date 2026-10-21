@@ -344,6 +344,65 @@ class Mascot(QWidget):
         if self.image_name:
             self.set_image(self.image_name)
 
+    # ------------------------------------------------------------------
+    # 外观开关 / appearance switches
+    # ------------------------------------------------------------------
+    def set_opacity(self, value: float):
+        """
+        设窗口不透明度 / Set the window opacity.
+
+        夹到 `[0.1, 1.0]`：0 会让窗口整个消失，用户以为程序崩了；
+        而 Qt 对 0 的处理也不可靠（下层窗口会透出来）。0.1 就是「几乎看不见」，
+        够用且不会引发这类误解。
+
+        Clamped to `[0.1, 1.0]`: 0 makes the window vanish entirely (users read
+        that as a crash) and Qt's handling of 0 is unreliable anyway (lower
+        windows bleed through).  0.1 is "almost invisible" and still honest.
+
+        与设置窗口的 `opacity_spin` 范围保持一致，避免两条路径能设出不同值。
+        Same range as the settings window's spinner so the two paths can never
+        disagree about what is legal.
+        """
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return
+        v = min(1.0, max(0.1, v))
+        self.setWindowOpacity(v)
+        self.update()
+
+    def set_click_through(self, enabled: bool):
+        """
+        鼠标穿透 / Mouse click-through.
+
+        `Qt.WA_TransparentForMouseEvents` 让整个窗口对鼠标**完全透明** ——
+        不是「只有图像外的透明像素不响应」（那是 `setMask` 一直在做的事），
+        而是连不透明像素上的点击和拖拽也一并丢掉，事件直接落到下层窗口。
+
+        这正是用户要的效果：小猫横在输入框上时，按不到它就等于不在。
+
+        This is `Qt.WA_TransparentForMouseEvents`: the whole window becomes
+        transparent to the mouse.  Clicks and drags on *opaque* pixels fall
+        through to whatever is underneath, instead of merely being blocked by
+        the window's shape (`setMask`, which has always been in effect).
+        """
+        on = bool(enabled)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, on)
+        # 穿透开着时如果正好在拖拽，鼠标抓取必须立刻交还，否则宠物会黏在
+        # 光标上、跟着一个它已经收不到事件的鼠标跑。
+        if on and self.dragging:
+            self.dragging = False
+            try:
+                self.releaseMouse()
+            except RuntimeError:
+                # 窗口已经在销毁流程里 / already tearing down
+                pass
+
+    @property
+    def click_through(self) -> bool:
+        """当前是否开启穿透 / Whether click-through is on."""
+        return bool(self.testAttribute(Qt.WA_TransparentForMouseEvents))
+
     def paintEvent(self, event):  # noqa: N802
         pix = self._pixmap(self.image_name, self.look_right)
         if pix is None:

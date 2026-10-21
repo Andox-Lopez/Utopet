@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -55,7 +56,13 @@ def receivers(sig, slot_owner, slot_name: str) -> bool:
 def main() -> int:
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    s = Settings()
+    # 配置写到临时目录：这个测试结尾会 m.quit()，而 quit 会存档并写盘 ——
+    # 用默认路径就是每次跑测试都改一遍用户真实的 config\settings.json。
+    # The settings file goes to a temp directory: this test ends with
+    # m.quit(), which snapshots the session and writes to disk.  With the
+    # default path, every run would rewrite the user's real settings.json.
+    s = Settings(os.path.join(
+        tempfile.mkdtemp(prefix="utopet_ctx_menu_"), "settings.json"))
     s.set("restore_session", False)
     s.set("initial_count", 3)
     s.set("taskbar_panel", False)

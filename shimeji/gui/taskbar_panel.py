@@ -158,14 +158,29 @@ class TaskbarPanel(QWidget):
         # "Gather" used to sit here as well, but it also lives in the tray and
         # pet context menus — three entry points for one action was too many.
         # 1.0.5 drops it from the panel; the menus keep it.
+        #
+        # 1.1.1：加一个「鼠标穿透」按钮。穿透是唯一一个「开了就够不着自己」的
+        # 开关，菜单里的勾选开了之后，宠物再也收不到右键 —— 面板就是那条
+        # 一定能摸到的回头路。放在「显隐」旁边，因为两者都是「让宠物别打扰我」。
+        # 1.1.1: a click-through button.  It is the one switch you cannot undo
+        # by clicking the pet (the pet no longer receives clicks), so the
+        # panel is the guaranteed way back.  It sits next to "Show/Hide" —
+        # both are "leave me alone".
         row3 = QHBoxLayout()
         self.btn_hide = QPushButton()
+        self.btn_through = QPushButton()
         self.btn_settings = QPushButton()
         self.btn_quit = QPushButton()
         self.btn_hide.clicked.connect(self.manager.toggle_hidden)
+        # 用 toggled 而不是 clicked：按钮是可勾选的，用户按下时状态已经翻转，
+        # 传出的 `checked` 就是新状态；用 clicked 会拿到翻转前的旧值。
+        # `toggled` rather than `clicked`: the button is checkable, so the
+        # state has already flipped by the time the signal fires and `checked`
+        # carries the new value.  `clicked` would deliver the stale one.
+        self.btn_through.toggled.connect(self._set_click_through)
         self.btn_settings.clicked.connect(self.manager.open_settings)
         self.btn_quit.clicked.connect(self.manager.quit)
-        for b in (self.btn_hide, self.btn_settings, self.btn_quit):
+        for b in (self.btn_hide, self.btn_through, self.btn_settings, self.btn_quit):
             row3.addWidget(b)
         outer.addLayout(row3)
 
@@ -245,6 +260,20 @@ class TaskbarPanel(QWidget):
         self.manager.summon_many(n, label=label)
         self.refresh_status()
 
+    def _set_click_through(self, enabled: bool):
+        """
+        切换鼠标穿透 / Toggle mouse click-through.
+
+        面板是穿透开关的「回头路」：右键菜单里一旦勾上，宠物就再也收不到
+        鼠标事件，用户没法靠右键把它关掉。面板按钮永远在、也永远点得到。
+        The panel is the way back from click-through: once the menu item is
+        ticked the pet receives no mouse events at all, so it cannot be
+        right-clicked to switch that off.  This button is always there and
+        always clickable.
+        """
+        self.manager.set_click_through(bool(enabled), None)
+        self.refresh_status()
+
     def _refresh_texts(self):
         t = self.t
         self.setWindowTitle(t.t("panel.title"))
@@ -255,6 +284,8 @@ class TaskbarPanel(QWidget):
         self.btn_dismiss_all.setText(t.t("panel.dismiss_all"))
         self.btn_pomodoro.setText(t.t("panel.pomodoro"))
         self.btn_hide.setText(t.t("panel.show_hide"))
+        self.btn_through.setText(t.t("panel.click_through"))
+        self.btn_through.setToolTip(t.t("menu.click_through_hint"))
         self.btn_settings.setText(t.t("panel.settings"))
         self.btn_quit.setText(t.t("panel.quit"))
         self.hint_label.setText(t.t("panel.hint"))
@@ -290,6 +321,15 @@ class TaskbarPanel(QWidget):
         self.state_label.setText(
             m.status.summary(self.manager.settings.get("language", "zh_CN"))
             if m is not None else "")
+        # 穿透按钮做成可勾选的：用户一眼能看出「现在开着没有」，
+        # 不必点一下试试看（而点击是有副作用的）。
+        # The button is checkable so the current state is visible at a glance —
+        # clicking to "test" it would have a side effect.
+        self.btn_through.setCheckable(True)
+        self.btn_through.blockSignals(True)
+        self.btn_through.setChecked(
+            bool(self.manager.settings.get("click_through", False)))
+        self.btn_through.blockSignals(False)
         # 只做「不出界」夹取，不再把面板拽回右下角。
         # 面板每 500ms 刷新一次，如果这里无条件 _place()，用户刚把面板拖到
         # 别处，半秒内就被拽回原点 —— 表现为「面板被固定在右下角，拖不动」。

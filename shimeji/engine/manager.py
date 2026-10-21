@@ -18,6 +18,7 @@ import sys
 import time
 
 from PySide6.QtCore import QObject, QTimer, Qt
+from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (QApplication, QMenu, QMessageBox,
                              QSystemTrayIcon)
 
@@ -112,6 +113,11 @@ def setup_logging():
         log.setLevel(logging.INFO)
     except OSError:
         pass
+
+
+def _pct(value: float) -> str:
+    """把 0.75 这种倍率写成「75%」/ Render a factor as a percentage label."""
+    return "%d%%" % int(round(float(value) * 100))
 
 
 def _pomodoro_state_text(pom: Pomodoro) -> str:
@@ -590,6 +596,12 @@ class Manager(QObject):
                    always_on_top=bool(self.settings.get("always_on_top", True)),
                    opacity=float(self.settings.get("opacity", 1.0)),
                    bundle=bundle)
+        # 新召唤的宠物要继承当前的穿透状态 —— 否则用户在菜单里开了穿透，
+        # 之后再召唤出来的却是「能点」的，同屏两只行为不一致，很费解。
+        # A newly summoned pet inherits the current click-through state: with
+        # it off, a pet summoned afterwards would still be clickable, and two
+        # pets behaving differently on the same screen is baffling.
+        m.set_click_through(bool(self.settings.get("click_through", False)))
         if anchor is None:
             wa = self.shared_env.work_area
             anchor = Pt(random.randint(wa.left + 80, max(wa.left + 81, wa.right - 80)),
@@ -1517,6 +1529,210 @@ class Manager(QObject):
         else:
             self.force_behavior_all(name, interrupt=True)
 
+        #: 右键菜单里「宠物尺寸」的档位 / size presets offered in the context menu.
+    #: 用整数百分比而不是原始倍率：用户看的是「多大」，不是「1.25 倍」。
+    #: Percentages, not raw multipliers: users think "how big", not "1.25x".
+    SCALE_PRESETS: tuple[float, ...] = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
+
+    #: 同理，透明度档位 / opacity presets (as a fraction of 1.0).
+    OPACITY_PRESETS: tuple[float, ...] = (1.0, 0.85, 0.7, 0.5, 0.3, 0.15)
+
+    def _build_appearance_submenu(self, menu: QMenu,
+                                 mascot: "Mascot | None") -> QMenu:
+        """
+        「外观」子菜单：尺寸 / 透明度 / 鼠标穿透 / The "Appearance" sub-menu.
+
+        1.1.1：把三件「这只宠物长什么样、挡不挡事」的操作收在一个子菜单里。
+        之前它们只躺在设置窗口的「外观」页——那是给愿意先打开设置窗口的人
+        准备的路径；真正常见的是用户正用着桌宠、觉得挡事了，顺手就想改。
+        右键菜单就是那个顺手的地方，所以三项都搬到这里、并且**立即生效**。
+
+        1.1.1: size / opacity / click-through now live in the right-click menu.
+        They used to be reachable only from the settings window — a path for
+        users who already went looking for them.  The far more common case is
+        "it is in my way *right now*", so all three are here, applying
+        immediately.
+
+        * **作用于一只还是全部**：与既有菜单一致 —— 从宠物身上右键 = 只改
+          它，从托盘右键 = 全部都改。
+          Matches every other item here: right-clicking a mascot targets that
+          one, the tray targets all of them.
+        * **同时写回设置**：菜单改了值不落盘的话，下次召唤出来的还是旧的，
+          重启后又弹回去 —— 用户会以为「设置没生效」。所以菜单 = 即时生效 +
+          持久化，设置窗口里的控件下次打开时自然显示同一个值。
+          Changes are persisted too: otherwise newly summoned pets keep the old
+          size and the change is gone after a restart, which reads as "the
+          setting didn't work".
+        * **穿透可回退**：穿透是唯一一个「开了就够不着自己」的开关，所以在
+          设置窗口同样放了一份，托盘菜单与任务栏面板也都能关。
+          Click-through is the only switch you cannot undo by clicking the
+          mascot itself, so it is mirrored in the settings window and can be
+          turned off from the tray or the panel as well.
+        """
+        t = get_i18n()
+        sub = QMenu(t.t("menu.appearance"), menu)
+
+        # ---- 尺寸 / size -------------------------------------------
+        # 用 QActionGroup 让这些档位**互斥**：菜单上同时只该有一个勾，
+        # 用户一眼能看出「现在是多大」。没有互斥组的话，用户点完一个档位，
+        # 菜单上会同时挂着好几个勾，看上去像多只宠物各有各的尺寸。
+        # A QActionGroup makes the presets mutually exclusive: exactly one
+        # tick, so the current size is visible at a glance.  Without it the
+        # menu ends up showing several ticks at once and reads as if each
+        # pet had a size of its own.
+        cur_scale = float(self.settings.get("scale", 1.0))
+        size_sub = QMenu(t.t("menu.pet_size"), sub)
+        size_sub.setToolTipsVisible(True)
+        size_group = QActionGroup(size_sub)
+        size_group.setExclusive(True)
+        for v in self.SCALE_PRESETS:
+            act = size_sub.addAction(t.t("menu.size_pct")
+                                     .replace("{0}", _pct(v)))
+            act.setCheckable(True)
+            act.setChecked(abs(v - cur_scale) < 1e-6)
+            size_group.addAction(act)
+            act.triggered.connect(
+                lambda _checked=False, value=v: self.set_pet_scale(value, mascot))
+        sub.addMenu(size_sub)
+
+        # ---- 透明度 / opacity ---------------------------------------
+        cur_op = float(self.settings.get("opacity", 1.0))
+        op_sub = QMenu(t.t("menu.pet_opacity"), sub)
+        op_sub.setToolTipsVisible(True)
+        op_group = QActionGroup(op_sub)
+        op_group.setExclusive(True)
+        for v in self.OPACITY_PRESETS:
+            act = op_sub.addAction(_pct(v))
+            act.setCheckable(True)
+            act.setChecked(abs(v - cur_op) < 1e-6)
+            op_group.addAction(act)
+            act.triggered.connect(
+                lambda _checked=False, value=v: self.set_pet_opacity(value, mascot))
+        sub.addMenu(op_sub)
+
+        # ---- 鼠标穿透 / click-through -------------------------------
+        sub.addSeparator()
+        through = sub.addAction(t.t("menu.click_through"))
+        through.setCheckable(True)
+        # 提示要说清「怎么关回来」——这个开关开了之后宠物自己就点不到了。
+        # The tooltip has to say how to undo it: once it is on, the pet can no
+        # longer be clicked.
+        through.setToolTip(t.t("menu.click_through_hint"))
+        # 开关状态跟「这一只」走；从托盘进来时没有任何一只可参考，就报全局设置。
+        # Checked state follows the targeted mascot; from the tray there is no
+        # single mascot, so it reflects the global setting.
+        if mascot is not None:
+            through.setChecked(mascot.click_through)
+        else:
+            through.setChecked(bool(self.settings.get("click_through", False)))
+        through.triggered.connect(
+            lambda checked=False: self.set_click_through(checked, mascot))
+        return sub
+
+    def _targets(self, mascot: "Mascot | None") -> list[Mascot]:
+        """菜单作用的宠物集合：右键的那一只，或全部 / The pets an action targets."""
+        if mascot is not None:
+            return [mascot]
+        return list(self.mascots)
+
+    def _persist_appearance(self):
+        """外观改动落盘 + 同步设置窗口里的控件 / Persist and sync open settings UI.
+
+        同步控件是因为「幽灵数值」最难缠：设置窗口已经开着的时候从右键菜单
+        改了尺寸，那个 spin 还停在旧值，用户随手一点「应用」就把改动覆盖回去，
+        于是菜单的功能看起来「时灵时不灵」。设置窗口未打开时直接跳过。
+        Syncing matters because stale widgets are the worst failure mode: with
+        the settings window already open, a spinner still showing the old value
+        would silently revert the change the moment the user hits Apply.
+        """
+        try:
+            self.settings.save()
+        except OSError:
+            log.exception("saving appearance settings failed")
+        win = self._settings_window
+        if win is None or not win.isVisible():
+            return
+        # 属性可能还不存在（设置窗口还在建第一个页签）。
+        # The widgets may not exist yet (the first tab is still being built).
+        for attr, key in (("scale_spin", "scale"), ("opacity_spin", "opacity")):
+            box = getattr(win, attr, None)
+            if box is not None:
+                box.setValue(float(self.settings.get(key, 1.0)))
+
+    def set_pet_scale(self, scale: float,
+                      mascot: "Mascot | None" = None):
+        """
+        改宠物尺寸 / Change the mascot scale.
+
+        立即生效而不是重启：设置窗口原本把 scale 变化当成「需要重启」，因为
+        那时尺寸在 `Mascot.__init__` 里定死、缓存也按旧倍率建好了。现在
+        `Mascot.set_scale()` 会清掉位图与遮罩缓存并重设窗口大小，重启就没必要了
+        —— 用户从菜单改完就该马上看到结果。
+
+        Applied live rather than on restart: the settings window used to treat a
+        scale change as "needs a restart", because the scale was baked into
+        `Mascot.__init__` and the caches were built for the old factor.
+        `Mascot.set_scale()` clears the pixmap/mask caches and resizes the
+        window, so a restart is no longer needed and the change shows up
+        immediately, as the menu promises.
+        """
+        try:
+            value = float(scale)
+        except (TypeError, ValueError):
+            return
+        # 0 会让 `setFixedSize(0, 0)` 把窗口缩成看不见的一条，比钳到下限更糟。
+        # Zero would `setFixedSize(0, 0)` the window out of existence, which is
+        # worse than clamping to the floor.
+        value = min(4.0, max(0.25, value))
+        self.settings.set("scale", value)
+        for m in self._targets(mascot):
+            m.set_scale(value)
+        self._persist_appearance()
+        if self._panel is not None:
+            self._panel.refresh_status()
+
+    def set_pet_opacity(self, opacity: float,
+                       mascot: "Mascot | None" = None):
+        """改宠物透明度 / Change the mascot opacity."""
+        try:
+            value = float(opacity)
+        except (TypeError, ValueError):
+            return
+        value = min(1.0, max(0.1, value))
+        self.settings.set("opacity", value)
+        for m in self._targets(mascot):
+            m.set_opacity(value)
+        self._persist_appearance()
+
+    def set_click_through(self, enabled: bool,
+                          mascot: "Mascot | None" = None):
+        """
+        开关鼠标穿透 / Toggle mouse click-through.
+
+        开着时宠物窗口收不到任何鼠标事件 —— 这正是「穿透」的意思，但也意味着
+        用户**没法再用右键把它关掉**。所以这个开关必须是三处可达的：宠物右键、
+        托盘右键、任务栏面板；设置窗口的「外观」页也有一份同名开关。
+        With click-through on, the mascot window receives no mouse events at
+        all — which is the point, but it also means the user can no longer
+        right-click the pet to turn it back off.  Hence three ways in (pet
+        menu / tray menu / panel) plus a checkbox in the settings window.
+        """
+        on = bool(enabled)
+        self.settings.set("click_through", on)
+        for m in self._targets(mascot):
+            m.set_click_through(on)
+        try:
+            self.settings.save()
+        except OSError:
+            log.exception("saving click_through failed")
+        win = self._settings_window
+        if win is not None and win.isVisible():
+            box = getattr(win, "through", None)
+            if box is not None:
+                box.blockSignals(True)
+                box.setChecked(on)
+                box.blockSignals(False)
+
     def _build_character_submenu(self, menu: QMenu) -> QMenu | None:
         """
         「召唤其他角色」子菜单 / The "summon another character" sub-menu.
@@ -1566,6 +1782,12 @@ class Manager(QObject):
             menu.addMenu(csub)
         menu.addAction(t.t("menu.gather"), self.gather_all)
         menu.addMenu(self._build_behavior_submenu(menu, mascot))
+        # 1.1.1：外观（尺寸/透明度/鼠标穿透）单独一组，紧挨着「指定动作」——
+        # 都是「对当前这只宠物做什么」，放一起用户一眼看得到。
+        # The appearance group (size / opacity / click-through) sits right
+        # after "Do behaviour": both are "do something to this pet".
+        menu.addSeparator()
+        menu.addMenu(self._build_appearance_submenu(menu, mascot))
         menu.addSeparator()
         menu.addAction(t.t("menu.dismiss") if mascot is not None
                        else t.t("tray.dismiss_one"),
@@ -1817,7 +2039,17 @@ class Manager(QObject):
             self.restart()
         else:
             for m in self.mascots:
-                m.setWindowOpacity(float(self.settings.get("opacity", 1.0)))
+                m.set_opacity(float(self.settings.get("opacity", 1.0)))
+                # 1.1.1：尺寸也在这里生效。设置窗口以前把 scale 变化算作
+                # 「需要重启」，但 `Mascot.set_scale()` 已经能就地改好，
+                # 没必要把整屋子的宠物都解散重来一次。
+                # The scale applies here too: the settings window used to
+                # treat a scale change as "needs a restart", but
+                # `Mascot.set_scale()` handles it in place, so there is no
+                # reason to dismiss and re-summon every pet.
+                m.set_scale(float(self.settings.get("scale", 1.0)))
+                m.set_click_through(
+                    bool(self.settings.get("click_through", False)))
         # 任务栏面板只在开关真正翻转时才动，避免每次「应用」都弹出来
         # Only touch the taskbar panel when the toggle actually flipped, so it
         # does not pop up on every "Apply".

@@ -242,5 +242,14 @@
   "pomo.hide_bg": "Hide background",
   "pomo.wip": "This feature is still in development and not available yet",
   "lbl.avoid_cooldown": "Flee cooldown",
-  "hint.avoid_cooldown": "How long before a pet may flee again after the last one did.\nNote: during this time the pet lives normally — it walks, sits, climbs windows; it just will not re-flee on the same ground.\n0 means always allowed, but then the pet may pace left-right."
+  "hint.avoid_cooldown": "How long before a pet may flee again after the last one did.\nNote: during this time the pet lives normally — it walks, sits, climbs windows; it just will not re-flee on the same ground.\n0 means always allowed, but then the pet may pace left-right.",
+  "menu.appearance": "Appearance & interaction…",
+  "menu.pet_size": "Pet size",
+  "menu.size_pct": "Scale {0}",
+  "menu.pet_opacity": "Pet opacity",
+  "menu.click_through": "Click-through",
+  "menu.click_through_hint": "When on, the pet no longer blocks the mouse — events pass through to the window below.\nNote: while it is on the pet receives no mouse events, so you cannot right-click it to turn this off. Use the tray icon menu or the settings window.",
+  "lbl.click_through": "Mouse click-through",
+  "lbl.click_through_hint": "Mouse events pass through the pet window to whatever is underneath.\nCareful: while this is on the pet cannot be clicked or dragged, and you cannot right-click it to switch this off — turn it off from the tray icon menu or here.",
+  "panel.click_through": "Click-through"
 }

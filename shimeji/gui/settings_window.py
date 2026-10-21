@@ -443,6 +443,18 @@ class SettingsWindow(QWidget):
         self.on_top = QCheckBox(t.t("lbl.always_on_top"))
         self.on_top.setChecked(bool(self.settings.get("always_on_top", True)))
         g.layout().addRow("", self.on_top)
+
+        # 1.1.1：鼠标穿透。右键菜单里也有同一个开关，但这个开关有个特殊
+        # 性质 —— 开着的时候宠物收不到鼠标事件，用户没法再靠右键把它关掉。
+        # 所以这里必须留一份：右键菜单是「顺手改」，这里是「回头改」的后路。
+        # 1.1.1: click-through.  The context menu has the same switch, but this
+        # one is special: once it is on, the pet ignores the mouse and the
+        # user can no longer right-click their way back.  This page is the
+        # way back.
+        self.through = QCheckBox(t.t("lbl.click_through"))
+        self.through.setChecked(bool(self.settings.get("click_through", False)))
+        self.through.setToolTip(t.t("lbl.click_through_hint"))
+        g.layout().addRow("", self.through)
         v.addWidget(g)
         v.addStretch(1)
         self.tabs.addTab(w, t.t("tab.appearance"))
@@ -1337,7 +1349,6 @@ class SettingsWindow(QWidget):
         s = self.settings
         old_lang = s.get("language", "zh_CN")
         old_char = s.get("character", "")
-        old_scale = float(s.get("scale", 1.0))
         old_top = bool(s.get("always_on_top", True))
         old_startup = bool(s.get("start_with_windows", False))
 
@@ -1350,6 +1361,7 @@ class SettingsWindow(QWidget):
         s.set("tick_ms", self.tick_spin.value())
         s.set("opacity", self.opacity_spin.value())
         s.set("always_on_top", self.on_top.isChecked())
+        s.set("click_through", self.through.isChecked())
         s.set("initial_count", self.initial_spin.value())
         s.set("restore_session", self.restore.isChecked())
         s.set("max_count", self.max_spin.value())
@@ -1412,8 +1424,15 @@ class SettingsWindow(QWidget):
             # Manager.set_multi_pet 会解散并按新模式重新召唤
             self.manager.set_multi_pet(now_multi)
 
+        # 1.1.1：尺寸变化**不再**需要重启。以前 scale 变了要重启，而 restart()
+        # 会解散所有宠物再召唤一只 —— 用户改个尺寸，整屋子的宠物就没了，还
+        # 全挤到同一个位置。现在 `Mascot.set_scale()` 就地改好，尺寸、透明度、
+        # 穿透都是即时生效。
+        # A scale change no longer needs a restart.  `restart()` dismisses every
+        # pet and summons a single one, so tuning the size used to wipe out
+        # the whole herd.  `Mascot.set_scale()` now handles it in place: size,
+        # opacity and click-through all take effect immediately.
         need_restart = (old_char != s.get("character")
-                        or abs(old_scale - float(s.get("scale", 1.0))) > 1e-6
                         or old_top != bool(s.get("always_on_top", True)))
         # 上限同步到表达式常量 / keep the maxCount constant in sync
         self.manager.constants["maxCount"] = float(s.get("max_count", 50))

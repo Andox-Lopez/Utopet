@@ -75,6 +75,13 @@ DEFAULTS = {
     "tick_ms": 40,                    # 帧间隔（毫秒，原版 40ms = 25fps）/ frame interval
     "opacity": 1.0,                   # 不透明度 / window opacity
     "always_on_top": True,            # 始终置顶 / keep mascots on top
+    # 1.1.1：鼠标穿透。开着时宠物窗口不吃鼠标事件，点它没反应、也拖不动 ——
+    # 所以这是个**有风险**的开关，右键菜单里的开关项会显式警告，并且托盘
+    # 菜单与任务栏面板都必须还能把它关掉（否则用户会被自己的桌宠困住）。
+    # 1.1.1: click-through.  With it on the mascot window ignores mouse events
+    # entirely (no clicks, no dragging), so the switch is risky: the menu warns,
+    # and the tray / panel must always remain able to turn it back off.
+    "click_through": False,           # 鼠标穿透 / mouse click-through
     # 行为 / behaviour
     "initial_count": 1,               # 启动时召唤几只 / how many mascots on start-up
     "restore_session": True,          # 记住上次退出的宠物与位置 / restore last session

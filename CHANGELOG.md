@@ -12,10 +12,49 @@
 
 ## [1.1.1] — 2026-10-18
 
-**宠物只和前台窗口互动。**
-**The pet only interacts with the foreground window.**
+**宠物只和前台窗口互动；右键菜单里能直接改外观。**
+**The pet only interacts with the foreground window; its look is now adjustable from the right-click menu.**
 
 ### 🔧 变更 Changed
+
+- **右键菜单新增「外观与交互…」：尺寸、透明度、鼠标穿透三样当场生效。**
+  以前这三样只能先打开设置窗口去找，而真正常见的情况是宠物正挡在输入框上、
+  顺手就想改。现在从宠物身上右键（或托盘右键）就能改，**点完立刻见效**：
+  - **宠物尺寸**：50% / 75% / 100% / 125% / 150% / 200% / 300% 七档，
+    菜单上用勾标出当前是哪一档。
+  - **宠物透明度**：100% 到 15% 六档，同样带勾。
+  - **鼠标穿透**：勾上之后宠物窗口不再吃鼠标事件，点击和拖拽直接落到下面的
+    窗口上 —— 小猫横在输入框上时等于不存在。
+
+  从宠物身上右键 = 只改这一只；从托盘右键 = 全部都改。改动同时写回设置，
+  重启后还在，新召唤的宠物也继承。
+  **New "Appearance & interaction…" sub-menu in the right-click menu: size,
+  opacity and click-through, all taking effect immediately.**
+  - **Size**: seven presets from 50% to 300%, with the current one ticked.
+  - **Opacity**: six presets from 100% down to 15%, also ticked.
+  - **Click-through**: with it on the pet window ignores mouse events
+    entirely, so clicks and drags land on whatever is underneath.
+
+  Right-clicking a mascot changes that one; the tray changes them all.  The
+  change is persisted, survives a restart, and newly summoned pets inherit it.
+
+- **改尺寸不再需要重启引擎。** 以前在设置里改缩放要重启，而重启会把桌上
+  所有宠物解散掉、只留一只 —— 调个大小却丢了整屋子的宠物。现在尺寸、透明度、
+  穿透都是即时生效。
+  **Changing the size no longer needs an engine restart.**  Rescaling used to
+  require a restart, and a restart dismissed every pet and summoned a single
+  one — tuning the size wiped out the whole herd.  Size, opacity and
+  click-through now apply immediately.
+
+- **「鼠标穿透」有三处可以关掉，不会把自己困住。** 这个开关有个特殊之处：
+  开着的时候宠物收不到鼠标事件，也就**没法再用右键把它关掉**。所以除了右键
+  菜单，托盘菜单、任务栏面板和设置窗口里都有同一个开关，tooltip 也写明了
+  从哪儿关。
+  **Click-through can be turned off from three places.**  It is the one switch
+  you cannot undo by clicking the pet — with it on the pet receives no mouse
+  events, so it cannot be right-clicked back off.  The tray menu, the taskbar
+  panel and the settings window all carry the same switch, and the tooltip
+  says where to undo it.
 
 - **窗口互动对象从「光标下的窗口」改成「前台（活动）窗口」。** 以前宠物跟着光标
   挑窗口：鼠标随手停在一个后台窗口上，它就跑去爬那个你根本没在用的窗口；打字时

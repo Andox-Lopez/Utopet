@@ -14,6 +14,7 @@ import io
 import os
 import re
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -51,9 +52,34 @@ def run_ticks(mgr: Manager, n: int):
         mgr.tick()
 
 
+def fresh_settings() -> Settings:
+    """
+    一份**全新的**配置（临时目录里）/ A pristine settings file in a temp dir.
+
+    这些子测试要验的是「全新安装」的行为，而全新安装 = 没有 settings.json。
+    直接用 `Settings()` 会读到用户早就跑过的配置，断言「默认值是 False」之类的
+    就会被用户的历史状态污染 —— 那正是测试脚本最容易骗自己的地方。
+
+    These sub-tests check "a fresh install", and a fresh install means no
+    settings.json at all.  `Settings()` would read the user's existing file
+    and the "the default is False" assertions would be polluted by the user's
+    history — the classic way a test script fools itself.
+    """
+    return Settings(os.path.join(
+        tempfile.mkdtemp(prefix="utopet_physics_"), "settings.json"))
+
+
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
-    settings = Settings()
+    # 配置写到**临时目录**。这个测试会走 Manager 的 save() 路径（存档、
+    # 首次引导标记等），用默认路径就是拿用户真实的 config\settings.json
+    # 当草稿纸 —— 跑一次测试把人家调好的外观、行为频率全改了，还不留痕迹。
+    # The settings file must live in a temp directory: this test exercises the
+    # Manager's save() paths (session snapshot, first-run flag, …).  With the
+    # default path it uses the user's real config\settings.json as scratch
+    # paper, silently rewriting the look and behaviour frequencies they tuned.
+    settings = Settings(os.path.join(
+        tempfile.mkdtemp(prefix="utopet_physics_"), "settings.json"))
     settings.set("character", "Miku")
     settings.set("initial_count", 1)
     settings.set("tick_ms", 40)
@@ -1077,7 +1103,7 @@ def main() -> int:
         # 状态污染，这正是测试脚本最容易骗自己的地方。
         check(DEFAULTS.get("first_run_guide_done") is False,
               "默认值是 False（= 会弹首次引导）")
-        s2 = _S()
+        s2 = fresh_settings()
         s2.set("first_run_guide_done", False)
         check(s2.get("first_run_guide_done", False) is False,
               "全新安装会弹首次引导")
@@ -1137,7 +1163,7 @@ def main() -> int:
 
         # 双击托盘图标 => 打开面板（而不是隐藏/显示宠物）
         from PySide6.QtWidgets import QSystemTrayIcon as _Tray
-        s2b = _S()
+        s2b = fresh_settings()
         # 面板可能被用户关掉了（本机实测 taskbar_panel=false，托盘是唯一入口）。
         # 显式打开，否则 _panel 是 None，测的根本不是这个行为。
         # The panel can be disabled by the user — on this very machine
@@ -1173,7 +1199,7 @@ def main() -> int:
         from shimeji import win32
 
         # ---- A. 两个开关互相独立 ----
-        s3 = _S()
+        s3 = fresh_settings()
         s3.set("climb_enabled", True)
         s3.set("throw_enabled", False)
         m3 = Manager(app, s3)
@@ -1194,7 +1220,7 @@ def main() -> int:
         m3.quit()
 
         # ---- B. 扔出去的窗口会被夹回工作区 ----
-        s4 = _S()
+        s4 = fresh_settings()
         s4.set("climb_enabled", True)
         s4.set("throw_enabled", True)
         m4 = Manager(app, s4)
@@ -1252,7 +1278,7 @@ def main() -> int:
         m4.quit()
 
         # ---- C. 面板不被固定在右下角 ----
-        s5 = _S()
+        s5 = fresh_settings()
         s5.set("panel_pos", None)
         m5 = Manager(app, s5)
         m5.start()

@@ -40,6 +40,13 @@ env/
 *.bak
 *~
 analysis/_*
+# 分析用的截图产物（shot_*.py 生成的 png）不入库：它们每次跑都会变，
+# 只是给人看的中间产物，不是交付物。
+# Screenshots produced by the analysis shot_*.py scripts are not committed:
+# they change on every run and are intermediate artefacts, not deliverables.
+analysis/appearance_*.png
+analysis/settings_appearance_*.png
+analysis/panel_zh.png
 install.log
 utopet_setup_debug.log
 

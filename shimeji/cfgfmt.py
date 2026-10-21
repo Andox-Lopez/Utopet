@@ -38,7 +38,7 @@ GROUPS: list[tuple[str, list[str]]] = [
     ("界面 / interface", [
         "language", "bilingual", "character", "character_dirs"]),
     ("外观 / appearance", [
-        "scale", "opacity", "always_on_top"]),
+        "scale", "opacity", "always_on_top", "click_through"]),
     ("行为 / behaviour", [
         "tick_ms", "initial_count", "max_count", "restore_session",
         "self_cloning_enabled", "self_cloning_pref", "spawn_spread",

@@ -312,15 +312,24 @@ def main() -> int:
         restore()
 
     # 回归：普通窗口仍然可以爬（别把功能一起关掉）
+    # ⚠️ 1.1.3 起 activeIE 由**光标**决定（不再跟前台窗口），所以光标必须
+    # 放进那扇窗口里，否则根本没有 activeIE。
+    # Since 1.1.3 activeIE follows the cursor, so the cursor must be inside
+    # the window or there is no activeIE at all.
     restore = with_windows([(384, 179, 1234, 979)])
     try:
         mgr.dismiss_all()
         pm = mgr.summon(Pt(500, 179))
+        # ⚠️ 连 dx/dy 一起存 —— 只恢复 x/y 会让下游的「输入回避区」按残留
+        # 速度算出 421x180 而不是 420x160（踩过一次）。
+        old_cursor = (env.cursor.x, env.cursor.y, env.cursor.dx, env.cursor.dy)
+        env.cursor.set(600, 300)
         env._update_active_ie()
         em = pm.env
-        check(em.activeIE.visible, "普通窗口在前台时 activeIE 仍然可用（没误伤）")
+        check(em.activeIE.visible, "光标在普通窗口里时 activeIE 可用（没误伤）")
         check(em.activeIE.topBorder.isOn(pm.anchor),
               "站在普通窗口顶边时 topBorder 命中（爬窗功能保留）")
+        env.cursor.x, env.cursor.y, env.cursor.dx, env.cursor.dy = old_cursor
         nm = next((n for n in ("IEの天井を歩く", "IEの天井を走る")
                    if n in mgr.actions), None)
         if nm:
@@ -2180,8 +2189,10 @@ def main() -> int:
               "被跳过的铺满窗口记在 blocked_ie_title 里（排查用）",
               repr(_env17.blocked_ie_title))
 
-        # 普通窗口在前台时照常可交互（没误伤爬窗）
+        # 普通窗口照常可交互（没误伤爬窗）
+        # ⚠️ 1.1.3 起 activeIE 由**光标**决定，光标要放进那扇窗口里。
         _set_windows17([(300, 300, 900, 800)])
+        _env17.cursor.set(600, 500)
         _env17._update_active_ie()
         check(_env17.activeIE.visible and _env17.activeIE.hwnd == 997000,
               "没有铺满窗口时普通窗口仍然可交互",

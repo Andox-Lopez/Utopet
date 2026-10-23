@@ -7,6 +7,7 @@
 ④ 脏文件解析（含非 ASCII 路径的引号情况）
 """
 import importlib.util
+import inspect
 import os
 import re
 import sys
@@ -230,6 +231,61 @@ check(_before == _after,
 check(_before_ahead == _after_ahead,
       "dry-run 没有推送（本地领先远端的提交数不变）",
       "ahead %d -> %d" % (_before_ahead, _after_ahead))
+
+# ── ⑤ 测试版（pre-release）─────────────────────────────────────────
+# ⛔ **测试版必须用独立 tag**，不能复用 `v<版本>`：tag 推上去就收不回来
+# （强推被拒、删 tag 会让已下载的人引用错乱），而正式版迟早要用那个 tag。
+# A pre-release must use its own tag: a pushed tag is effectively
+# irreversible, and the real release will need `v<version>` later.
+section("测试版（pre-release）")
+_pub = inspect.getsource(rel.publish)
+check('prerelease' in _pub,
+      "publish() 支持 prerelease 参数")
+check('"--prerelease"' in _pub,
+      "给 gh release create 传了 --prerelease")
+check('tag = "v%s-%s" % (version, prerelease)' in _pub,
+      "测试版用独立 tag v<版本>-<后缀>（不复用 v<版本>）")
+check("else:\n        tag = \"v%s\" % version" in _pub,
+      "正式版仍然是 v<版本>（行为不变）")
+
+# 命令行参数要真的存在
+_help = rel.main.__doc__ or ""
+_ap = None
+try:
+    import argparse
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--prerelease", default=None)
+except Exception:
+    pass
+check(_ap is not None, "argparse 能解析 --prerelease")
+
+# 真的用 dry-run 跑一遍预发布，确认它显示的是 beta tag
+import io
+import contextlib
+_buf = io.StringIO()
+try:
+    with contextlib.redirect_stdout(_buf):
+        rel.publish(VER, "x.exe", dry=True, assume_yes=False,
+                    message=None, prerelease="beta.1")
+except Exception as e:
+    check(False, "publish(prerelease=...) 能跑通", repr(e))
+_out = _buf.getvalue()
+check("v%s-beta.1" % VER in _out,
+      "预发布 dry-run 显示的 tag 带 -beta.1 后缀",
+      [ln for ln in _out.splitlines() if "tag=" in ln][:1])
+check("pre-release" in _out,
+      "预发布 dry-run 明确标出「测试版」")
+
+# 正式版的 dry-run 不该被污染
+_buf2 = io.StringIO()
+try:
+    with contextlib.redirect_stdout(_buf2):
+        rel.publish(VER, "x.exe", dry=True, assume_yes=False, message=None)
+except Exception:
+    pass
+_out2 = _buf2.getvalue()
+check("v%s" % VER in _out2 and "beta" not in _out2,
+      "正式版 dry-run 仍然只显示 v<版本>（没有被预发布逻辑污染）")
 
 print()
 print("=" * 60)

@@ -10,12 +10,13 @@
 
 ---
 
-## [1.1.3] — 2026-10-23
+## [1.1.2] — 2026-10-23
 
-**窗口交互改回「看得见就能互动」，虚空行走也修好了。**
-**Any visible window can be interacted with again, and the pet no longer walks through mid-air.**
+**窗口交互不再出悬空位移，爬墙的朝向也翻对了，被完全遮盖的窗口不再参与互动。**
+**No more floating window interaction, the sprite faces the right way while climbing, and fully covered windows no longer take part in it.**
 
 ### 🐛 修复 Fixed
+
 
 - **任何没有被完全遮盖的窗口都可以正常接收交互，只有被完全盖住的才禁止。**
   1.1.1 起互动对象被改成了「当前前台窗口」，范围收得太窄：桌面上同时开着
@@ -42,22 +43,6 @@
   毫无意义 —— 用户只看到自己的窗口莫名其妙跟着动，却完全不明白发生了什么。
   **Carrying or throwing stops as soon as the target is fully covered.**
 
-### 🔧 变更 Changed
-
-- **窗口层叠时的判定保持一致。** 三扇窗口层层压住时，最上层的那扇可以互动，
-  被压在下面的不行；把最上层挪开后，下面那扇立刻变成可互动对象。
-  **Consistent behaviour with stacked windows:** the topmost one is
-  interactable, the ones buried under it are not — and moving the top one
-  away immediately frees the one below.
-
----
-
-## [1.1.2] — 2026-10-23
-
-**窗口互动不再出悬空位移，爬墙的朝向也翻对了。**
-**No more floating window interaction, and the sprite faces the right way while climbing.**
-
-### 🐛 修复 Fixed
 
 - **和窗口互动结束后，宠物会掉回地面正常走路，不再在半空中凭空位移。**
   以前宠物站在某扇窗口顶边时，你切到别的窗口，那扇窗就退到背景去了 —— 但
@@ -97,6 +82,14 @@
 
 ### 🔧 变更 Changed
 
+
+- **窗口层叠时的判定保持一致。** 三扇窗口层层压住时，最上层的那扇可以互动，
+  被压在下面的不行；把最上层挪开后，下面那扇立刻变成可互动对象。
+  **Consistent behaviour with stacked windows:** the topmost one is
+  interactable, the ones buried under it are not — and moving the top one
+  away immediately frees the one below.
+
+
 - **测试不再依赖「用户当时在干什么」。** 回避区尺寸那条断言以前会在
   420×160（光标框）和 421×177（某个输入框的 caret 框）之间随机跳 —— 因为它
   读的是真实光标与真实焦点输入框。现在给 `AvoidZones` 加了三个注入接缝
@@ -105,6 +98,8 @@
   avoidance-zone size assertion flipped between 420x160 and 421x177 because it
   read the real cursor and the real focused text field.  `AvoidZones` now has
   three injectable sources so tests can pin them.
+
+---
 
 ---
 

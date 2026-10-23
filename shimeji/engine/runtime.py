@@ -26,6 +26,7 @@ Without it the mascot hangs in mid-air or gets snapped back onto a border.
 
 from __future__ import annotations
 
+import logging
 import math
 
 from ..xml.config import ActionDef, ActionRef
@@ -33,6 +34,9 @@ from .environment import NOT_ON_BORDER, Pt
 
 __all__ = ["ActionInstance", "create_action",
            "AnimateInstance", "SequenceInstance", "SelectInstance", "InstantInstance"]
+
+#: 模块级 logger / module logger
+log = logging.getLogger(__name__)
 
 #: 规范参数名 -> 日文参数名（表达式里直接用日文变量名）
 # canonical param name -> Japanese name (expressions refer to the Japanese names)
@@ -354,6 +358,21 @@ class AnimateInstance(ActionInstance):
         if frame == "ceiling":
             return env.ceiling
         if frame == "wall":
+            # 1.1.2：**先按位置找**实际贴着的那条墙，再退回按朝向找。
+            # 以前直接 `env.wall(look_right)` —— 那是「朝右查窗口左边、
+            # 朝左查窗口右边」的规则，而爬墙动作没有目的地X、朝向沿用爬之前的
+            # 值，于是经常**查错边**：宠物明明贴在屏幕左墙上，却因为朝右而去
+            # 查右墙，判定不成立 -> 动作第一帧就 LostGround -> 表现为
+            # 「爬墙爬到一半就掉下来」或「贴图镜像反了」。
+            #
+            # 按位置找就没有这个问题：位置是事实。
+            # Find the wall by position first.  Asking `wall(look_right)` used
+            # to pick the wrong side whenever the inherited facing disagreed
+            # with where the pet actually was, and the action then raised
+            # LostGround on its first frame.
+            _w = env.wall_at()
+            if _w is not None:
+                return _w
             return env.wall(self.mascot.look_right)
         return None
 
@@ -432,6 +451,43 @@ class AnimateInstance(ActionInstance):
         # 3) 面朝目的地（原版 Move.tick 每帧都做）/ face the destination every tick
         if dest_x is not None and m.anchor.x != dest_x:
             m.set_look_right(m.anchor.x < dest_x)
+
+        # 3b) 爬墙时朝向由「实际贴住哪条墙」决定（1.1.2）
+        #     On a wall, the facing follows the wall the pet is actually on.
+        #
+        # 爬墙动作（`壁を登る`）**只有目的地Y、没有目的地X**，所以上面第 3 步
+        # 根本不会执行 —— 朝向就一路沿用「爬之前」的值。宠物从右边走到屏幕
+        # 左墙时朝向右，于是**贴着左墙往上爬、贴图却是朝右的**，看起来就是
+        # 「爬墙时镜像反了」。
+        #
+        # 而且这个错误会**自我强化**：`wall()` 是按 `look_right` 选边的
+        # （朝右查窗口左边、朝左查窗口右边），朝向错 -> 查到另一条边 ->
+        # 判定不成立 -> 动作第一帧就 LostGround。
+        #
+        # 所以这里**不看朝向，改看位置**：先由锚点找出真正贴着的那条墙，
+        # 再由那条墙决定贴图该朝哪边。位置是事实，朝向只是对事实的解读 ——
+        # 反过来让朝向决定位置，就会出现「因为朝右所以去找右墙，可我明明
+        # 贴在左墙上」的死循环。
+        #
+        # 这一步放在第 3 步**之后**：有目的地X时以目的地为准（走路场景要
+        # 朝向目的地），没有目的地X时（爬墙）才由墙来定。
+        #
+        # The climb action has a destination Y but **no destination X**, so
+        # step 3 never runs and the facing is inherited from before the climb
+        # — the pet walks to the left wall facing right and climbs it with a
+        # right-facing sprite.  Worse, the error is self-reinforcing: `wall()`
+        # picks a side *from* the facing, so a wrong facing looks for the
+        # wrong edge and the action raises LostGround on its first frame.
+        #
+        # So here the position decides: find the wall the pet is really on,
+        # then let that wall decide the sprite's facing.
+        if self.defn.frame == "wall" and dest_x is None:
+            try:
+                _w = m.env.wall_at()
+                if _w is not None:
+                    m.set_look_right(m.env.facing_for_wall(_w))
+            except Exception:  # noqa: BLE001 - 朝向错了不该让动作崩掉
+                log.debug("resolving wall facing failed", exc_info=True)
 
         # 4) 按速度移动（朝右时水平取反）/ move; negate horizontal velocity when facing right
         vx, vy = pose.velocity.pair(ns, (0.0, 0.0))

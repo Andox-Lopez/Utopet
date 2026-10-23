@@ -79,11 +79,44 @@ class AvoidZones:
         self._last_key_ms = -10 ** 9
         #: 现在的时间源；测试可替换成假时钟 / injectable clock for tests
         self._clock_ms = None
+        #: 光标位置来源；测试可替换成固定值 / where the cursor position comes from
+        self._cursor_pos = None
+        #: caret 矩形来源；测试可替换成固定值（或 None 表示「取不到」）
+        #: Where the caret rect comes from; tests may pin it (or to None).
+        self._caret_rect = None
+        #: IME 候选窗来源；测试可替换成空列表 / where the IME rects come from
+        self._ime_rects = None
 
     # ------------------------------------------------------------------
     def set_clock(self, func):
         """注入时间源（测试用）/ Inject a clock (tests only)."""
         self._clock_ms = func
+
+    def set_cursor_pos(self, func):
+        """
+        注入光标位置来源（测试用）/ Inject the cursor position source.
+
+        默认是 `win32.get_cursor_pos()`。**真实光标位置会让测试依赖用户当时
+        在干什么** —— 用户此刻有焦点输入框就走 A 路（caret 框），没有就走
+        B 路（光标框），两种矩形尺寸完全不同，断言于是随机红。
+        The real cursor makes a test depend on what the user is doing: with a
+        focused text field the zones come from the caret box, without one from
+        the cursor box, and the two differ in size.
+        """
+        self._cursor_pos = func
+
+    def set_caret_rect(self, func):
+        """
+        注入 caret 矩形来源（测试用）/ Inject the caret-rect source.
+
+        传 `lambda: None` 表示「取不到 caret」——那就一定走 B 路。
+        Return None to mean "no caret available", which forces path B.
+        """
+        self._caret_rect = func
+
+    def set_ime_rects(self, func):
+        """注入 IME 候选窗来源（测试用）/ Inject the IME-rect source."""
+        self._ime_rects = func
 
     def _now_ms(self) -> int:
         if self._clock_ms is not None:
@@ -129,11 +162,17 @@ class AvoidZones:
             self.source = "none"
             return
 
-        cx, cy = win32.get_cursor_pos()
+        if self._cursor_pos is not None:
+            cx, cy = self._cursor_pos()
+        else:
+            cx, cy = win32.get_cursor_pos()
         rects: list[tuple[int, int, int, int]] = []
 
         # ── A 路：精确光标矩形（传统控件） ─────────────────────────────
-        caret = win32.get_input_caret_rect()
+        if self._caret_rect is not None:
+            caret = self._caret_rect()
+        else:
+            caret = win32.get_input_caret_rect()
         if caret is not None:
             l, t, r, b = caret
             rects.append((l - self.margin_x, t - self.margin_y,
@@ -149,7 +188,10 @@ class AvoidZones:
         # （实测 1.35ms，是最贵的一次调用）。
         # An IME can only be up while the user types, so only now is it worth
         # paying for the 1.35 ms enumeration.
-        rects.extend(win32.visible_ime_rects())
+        if self._ime_rects is not None:
+            rects.extend(self._ime_rects())
+        else:
+            rects.extend(win32.visible_ime_rects())
         self.rects = rects
 
     # ------------------------------------------------------------------

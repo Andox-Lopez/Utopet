@@ -10,6 +10,62 @@
 
 ---
 
+## [1.1.2] — 2026-10-23
+
+**窗口互动不再出悬空位移，爬墙的朝向也翻对了。**
+**No more floating window interaction, and the sprite faces the right way while climbing.**
+
+### 🐛 修复 Fixed
+
+- **和窗口互动结束后，宠物会掉回地面正常走路，不再在半空中凭空位移。**
+  以前宠物站在某扇窗口顶边时，你切到别的窗口，那扇窗就退到背景去了 —— 但
+  引擎仍把**所有**窗口的边都当作可以站立的地面，于是宠物继续在一条已经
+  看不见的边上走，用户看到的就是「宠物在半空中移动」。现在地面/天花板/墙
+  **只认当前前台窗口**：前台一换，脚下的边就没了，宠物老老实实掉回地面，
+  然后正常走路。
+  **After window interaction the pet drops back to the ground and walks
+  normally, instead of drifting through mid-air.**  The floor, ceiling and
+  walls used to consider *every* window, so a window that had already been
+  sent to the background still counted as a standable surface.  Only the
+  foreground window counts now: switching away removes the edge underfoot and
+  the pet honestly falls.
+- **互动过程中只跟当前前台窗口，不会再去拖后台窗口。** 宠物「抱着窗口走」的
+  动作会在开始时锁定一扇窗口，之后一路带着它走 —— 哪怕你早就切走了，它还在
+  拖那个后台窗口。现在目标一旦失去前台身份，**当帧就放手**。同理，「扔窗口」
+  也不会再把用户已经切走的窗口甩出去。
+  **Window interaction now only ever targets the foreground window.**  The
+  carry action locked onto a window and kept dragging it even after the user
+  switched away; it now lets go on the very tick the target loses the
+  foreground, and throwing no longer flings an abandoned window.
+- **爬墙时贴图的方向翻对了。** 爬墙动作只有「目的地Y」、没有「目的地X」，
+  所以引擎里「面朝目的地」那一步根本不执行，贴图方向一路沿用**爬之前**的
+  值 —— 于是宠物贴着左墙往上爬、脸却朝着右边。现在爬墙时方向由「实际贴住
+  哪条墙」决定：位置是事实，方向只是对事实的解读。
+  **The sprite now faces the right way while climbing.**  The climb action has
+  a destination Y but no destination X, so the "face the destination" step
+  never ran and the sprite kept whatever facing it had before the climb.  The
+  facing now follows the wall the pet is actually on: the position is the
+  fact, the facing is only an interpretation of it.
+- **屏幕边缘与窗口边缘的方向规则本来就相反，现在两边都对。** 屏幕的边在宠物
+  **外侧**（面朝外才是贴在边上），窗口的边在宠物**内侧**（面朝窗口才是趴在
+  窗口上）。原版行为表就是这么规定的，现在引擎与之一致。
+  **Screen edges and window edges want opposite facings, and both are right
+  now.**  A screen edge lies outside the pet while a window edge lies inside
+  it — the original behaviour table encodes exactly this.
+
+### 🔧 变更 Changed
+
+- **测试不再依赖「用户当时在干什么」。** 回避区尺寸那条断言以前会在
+  420×160（光标框）和 421×177（某个输入框的 caret 框）之间随机跳 —— 因为它
+  读的是真实光标与真实焦点输入框。现在给 `AvoidZones` 加了三个注入接缝
+  （光标位置 / caret 矩形 / IME 候选窗），测试可以钉死这些来源。
+  **The tests no longer depend on what the user happens to be doing.**  The
+  avoidance-zone size assertion flipped between 420x160 and 421x177 because it
+  read the real cursor and the real focused text field.  `AvoidZones` now has
+  three injectable sources so tests can pin them.
+
+---
+
 ## [1.1.1] — 2026-10-18
 
 **宠物只和前台窗口互动；右键菜单里能直接改外观。**

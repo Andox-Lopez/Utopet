@@ -245,6 +245,12 @@ def main() -> int:
         # `refresh()` inside every `tick()` re-enumerates the real windows and
         # would wipe the fake list, so make enumeration a no-op here.
         env._enumerate = lambda *a, **k: None
+        # ⚠️ 必须立刻刷新 activeIE。1.1.2 起「地面/天花板/墙」只认**前台窗口**
+        # （`_candidates()` 只返回 activeIE），而 activeIE 是 `_update_active_ie()`
+        # 的产物 —— 不刷新的话它还是上一次的值，测试就会用错的前台窗口。
+        # Refresh activeIE right away: the floor/ceiling/wall now follow the
+        # foreground window, and activeIE is what _update_active_ie() produces.
+        env._update_active_ie()
 
         def _restore():
             env.windows = saved_w
@@ -254,6 +260,7 @@ def main() -> int:
                 env.__dict__.pop("_foreground_hwnd", None)
             else:
                 env._foreground_hwnd = saved_fg
+            env._update_active_ie()
 
         return _restore
 
@@ -373,46 +380,56 @@ def main() -> int:
     # ==================================================================
     section("2. LostGround：走到窗口边缘会掉下来，不再卡着蹭")
     # 造一个「悬空的窗台」：宠物站在窗口顶边，走到边缘外应当报 LostGround
-    win = mgr.shared_env.windows
-    before_n = len(win)
-    # 用一个假的 Area 注入窗口列表（不真的创建窗口）
-    fake = Area(wa.left + 200, wa.top + 300, wa.left + 500, wa.top + 600, True, hwnd=0)
-    mgr.shared_env.windows.append(fake)
-    mgr.shared_env._window_map[0] = fake
-    # 宠物站在这个假窗口顶边
-    m.anchor = Pt(wa.left + 350, fake.top)
-    f = m.env.floor
-    check(f is not NOT_ON_BORDER and abs(f.y - fake.top) <= 2,
-          "站在窗口顶边时 floor 命中窗口顶边", f"floor.y={getattr(f,'y',None)} window.top={fake.top}")
+    #
+    # ⚠️ 1.1.2：这扇假窗口必须是**前台窗口**。地面/天花板/墙现在只认前台窗口
+    # （`_candidates()` 只返回 activeIE）—— 不认的话，宠物站在一个非前台
+    # 窗口的顶边上却仍被判定为「在地面上」，就会触发「凭空行走」那个缺陷。
+    # 所以这里用 `with_windows`（它会一并把前台设成这扇窗口）。
+    # The fake window must be the FOREGROUND one: the floor/ceiling/wall now
+    # only consider the foreground window.  A pet standing on a background
+    # window's edge would still count as "on the ground" otherwise — the very
+    # bug behind the "walking through mid-air" report.
+    _restore_w2 = with_windows([(wa.left + 200, wa.top + 300,
+                                  wa.left + 500, wa.top + 600)])
+    fake = env._window_map[990000]
+    try:
+        # 宠物站在这个假窗口顶边
+        m.anchor = Pt(wa.left + 350, fake.top)
+        f = m.env.floor
+        check(f is not NOT_ON_BORDER and abs(f.y - fake.top) <= 2,
+              "站在窗口顶边时 floor 命中窗口顶边",
+              f"floor.y={getattr(f,'y',None)} window.top={fake.top}")
 
-    # 往右走出窗口右边缘 -> 应该脱离 floor
-    m.anchor = Pt(fake.right + 30, fake.top)
-    check(m.env.floor is NOT_ON_BORDER,
-          "走出窗口右边缘后 floor 变 NOT_ON_BORDER（会触发下落）")
+        # 往右走出窗口右边缘 -> 应该脱离 floor
+        m.anchor = Pt(fake.right + 30, fake.top)
+        check(m.env.floor is NOT_ON_BORDER,
+              "走出窗口右边缘后 floor 变 NOT_ON_BORDER（会触发下落）")
 
-    # 现在跑一个「枠=地面」的走动动作，走到边缘应当产生 lost_ground
-    from shimeji.engine.runtime import create_action
-    from shimeji.xml.expr import Val
-    # 目的地是字面量数字，包成 Val（和 XML 解析出来的形式一致）
-    m.anchor = Pt(wa.left + 250, fake.top)
-    m.look_right = True
-    act = create_action(m, "歩く", {"destX": Val(str(fake.right + 200))})
-    check(act is not None, "创建「歩く」动作（枠=地面，带目的地）")
-    if act is not None:
-        lost = False
-        steps = 0
-        while steps < 400:
-            steps += 1
-            alive = act.tick()
-            m.reposition()
-            if not alive:
-                lost = act.lost_ground
-                break
-        check(lost,
-              "走出窗口边缘的动作以 LostGround 结束（而不是静默结束）",
-              f"走了 {steps} 帧, lost_ground={lost}")
-        check(m.anchor.x > fake.right - 5,
-              "宠物确实走出了窗口右边缘", f"x={m.anchor.x:.0f} right={fake.right}")
+        # 现在跑一个「枠=地面」的走动动作，走到边缘应当产生 lost_ground
+        from shimeji.engine.runtime import create_action
+        from shimeji.xml.expr import Val
+        # 目的地是字面量数字，包成 Val（和 XML 解析出来的形式一致）
+        m.anchor = Pt(wa.left + 250, fake.top)
+        m.look_right = True
+        act = create_action(m, "歩く", {"destX": Val(str(fake.right + 200))})
+        check(act is not None, "创建「歩く」动作（枠=地面，带目的地）")
+        if act is not None:
+            lost = False
+            steps = 0
+            while steps < 400:
+                steps += 1
+                alive = act.tick()
+                m.reposition()
+                if not alive:
+                    lost = act.lost_ground
+                    break
+            check(lost,
+                  "走出窗口边缘的动作以 LostGround 结束（而不是静默结束）",
+                  f"走了 {steps} 帧, lost_ground={lost}")
+            check(m.anchor.x > fake.right - 5,
+                  "宠物确实走出了窗口右边缘", f"x={m.anchor.x:.0f} right={fake.right}")
+    finally:
+        _restore_w2()
 
     # ==================================================================
     section("3. LostGround 会被 Manager 接管成「落下する」")
@@ -451,10 +468,9 @@ def main() -> int:
           "LostGround 之后确实在动（不是卡住）",
           f"轨迹 {traj[:6]}... 共 {len(set(traj))} 个不同位置")
 
-    # 清理假窗口
-    mgr.shared_env.windows.remove(fake)
-    mgr.shared_env._window_map.pop(0, None)
-    check(len(mgr.shared_env.windows) == before_n, "清理测试用的假窗口")
+    # 假窗口由 `with_windows` 的恢复函数清理（见上面的 try/finally），
+    # 这里不再手动 remove。
+    # The fake window is cleaned up by with_windows' restorer.
 
     # ==================================================================
     section("4. Fall 子步进：不会穿过窗口顶边")
@@ -473,11 +489,22 @@ def main() -> int:
     _saved_map = dict(mgr.shared_env._window_map)
     mgr.shared_env.windows[:] = []
     mgr.shared_env._window_map.clear()
+    # ⚠️ 同样要把这扇假窗口设成**前台**（见上面第 2 节的理由）：地面/天花板
+    # 只认前台窗口，不是前台的窗口顶边不算落点。
+    # The fake window must be the foreground one here too: only the
+    # foreground window's top edge counts as a landing surface.
+    _saved_fg = env.__dict__.get("_foreground_hwnd")
+    _saved_enum = env._enumerate
+    env._enumerate = lambda *a, **k: None
     try:
         fake2 = Area(wa.left + 200, wa.top + 300, wa.left + 500, wa.top + 600,
-                     True, hwnd=0)
+                     True, hwnd=990500)
         mgr.shared_env.windows.append(fake2)
-        mgr.shared_env._window_map[0] = fake2
+        mgr.shared_env._window_map[990500] = fake2
+        env._foreground_hwnd = lambda: 990500
+        # 刷新 activeIE：地面只认前台窗口，不刷新就用不到这扇假窗口。
+        # Refresh activeIE: the floor follows the foreground window.
+        env._update_active_ie()
         m.anchor = Pt(wa.left + 350, fake2.top - 150)
         from shimeji.engine.runtime import create_action as _ca
         fall = _ca(m, "落ちる", {})
@@ -497,6 +524,11 @@ def main() -> int:
         mgr.shared_env.windows[:] = _saved_windows
         mgr.shared_env._window_map.clear()
         mgr.shared_env._window_map.update(_saved_map)
+        env._enumerate = _saved_enum
+        if _saved_fg is None:
+            env.__dict__.pop("_foreground_hwnd", None)
+        else:
+            env._foreground_hwnd = _saved_fg
 
     # ==================================================================
     section("5. 抛出：松手后立刻被甩出去并有连续的下落过程")
@@ -2205,6 +2237,18 @@ def main() -> int:
     # `mascot.fleeTargetX` 提供）；角色包自带的「跑开」只是回退路径。
     from shimeji.engine.manager import ACTION_FLEE as _FLEE
 
+    # ⚠️ 把光标速度**归零**再开始。前面若干测试为了模拟「甩出去」而移动过
+    # 光标，`Location.set()` 会把速度更新成移动量的一半，于是**残留速度**
+    # 会被下面的回避区计算读走 —— B 路回避区是「光标附近的矩形」，矩形大小
+    # 取决于光标速度，于是断言偶尔拿到 421x177 而不是 420x160，测试变成
+    # 随机红。踩过一次：连跑 4 次挂 2 次，还以为是自己改的锅。
+    # Zero the cursor velocity first.  Earlier tests moved the cursor to
+    # simulate a fling, and Location.set() updates the velocity to half the
+    # movement — so the leftover speed feeds the "rectangle around the cursor"
+    # and the size assertion intermittently sees 421x177 instead of 420x160.
+    mgr.shared_env.cursor.dx = 0.0
+    mgr.shared_env.cursor.dy = 0.0
+
     # ── A. 键盘活动的时间窗 ──────────────────────────────────────────
     _az1 = _AZ()
     _now1 = [1000]
@@ -2231,6 +2275,19 @@ def main() -> int:
     _az2 = _AZ()
     _now2 = [5000]
     _az2.set_clock(lambda: _now2[0])
+    # ⚠️ 显式钉住三个环境相关来源，否则断言会**依赖用户当时在干什么**：
+    #   - caret：用户此刻有焦点输入框就走 A 路（矩形 = 输入框 + 边距），
+    #     没有就走 B 路（矩形 = 2×边距）。两者尺寸完全不同。
+    #   - IME：输入法开着时会多并一块候选窗。
+    #   - 光标位置：真实光标在动，矩形跟着动。
+    # 之前这个断言在 420x160（光标框）和 421x177（某个输入框的 caret 框）
+    # 之间随机跳，连跑 8 次挂 4 次 —— 典型的「测试依赖环境」假红。
+    # Pin all three environment-dependent sources: with a focused text field
+    # the zone comes from the caret box (input field plus margins), without
+    # one from the cursor box (2x the margins) — completely different sizes.
+    _az2.set_cursor_pos(lambda: (500, 400))
+    _az2.set_caret_rect(lambda: None)     # 取不到 caret -> 一定走 B 路
+    _az2.set_ime_rects(lambda: [])        # 没有 IME 候选窗
     _az2.feed_keyboard(True)
     _az2.update()
     check(len(_az2.rects) == 1, "生成一块回避区", str(_az2.rects))

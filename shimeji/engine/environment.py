@@ -629,6 +629,61 @@ class Environment:
         """
         return win32.get_foreground_window()
 
+    def is_foreground(self, hwnd: int | None) -> bool:
+        """
+        这个 hwnd 现在还是前台窗口吗 / Is this window still the foreground one?
+
+        **窗口互动全程都要查这个。** 1.1.1 起互动目标只认前台窗口，但「只认
+        前台」有两层含义，第二层很容易漏：
+
+        1. **选目标时**认前台 —— 已有 `_update_active_ie()` 负责。
+        2. **互动过程中**仍然认前台 —— 宠物抱着窗口走了两秒，用户切了窗口，
+           那个窗口已经不是前台了，宠物却还在拖它、爬它。
+
+        第 2 层漏掉的表现正是用户说的「不得与非前台窗口发生交互」：切走之后，
+        宠物还在跟一个后台窗口较劲，把用户的旧窗口拖来拖去。
+
+        注意这里**不查窗口表**，只比 hwnd：窗口表每 tick 刷新，可能已经把这个
+        窗口划掉了（最小化/关闭），但「它是不是前台」是操作系统的事，跟我们
+        的缓存无关。用缓存判会得到「窗口一被最小化就不再算前台」的假象。
+        Here we compare handles only and do not consult the window table: the
+        table is refreshed per tick and may already have dropped the window
+        (minimised or closed), but "is it the foreground window" is the OS's
+        business, not our cache's.  Consulting the cache would fake a
+        "minimised windows are no longer foreground" rule.
+        """
+        if not hwnd:
+            return False
+        try:
+            fg = self._foreground_hwnd()
+        except Exception:
+            # 拿不到前台窗口时**不**判定为「不是前台」：宁可让互动继续，
+            # 也不要因为一次查询失败就把宠物从窗口上踢下来。
+            # If the foreground cannot be read, do not claim it is "not
+            # foreground": keeping the interaction is safer than dropping the
+            # pet off a window over one failed query.
+            log.debug("get_foreground_window failed; assuming unchanged")
+            return True
+        return int(fg or 0) == int(hwnd)
+
+    def interactive_window(self, hwnd: int | None):
+        """
+        这个 hwnd 现在还能作为互动对象吗 / Is this window still interactable?
+
+        比 `is_foreground()` 多一层：**窗口必须还在**（没被关掉/最小化）。
+        前台但已经不可见 —— 比如被最小化后又被还原 —— 不该再被拖着走。
+        `is_foreground()` plus one more condition: the window must still be
+        around (not closed or minimised).
+
+        返回那个 Area，或者 None。
+        """
+        if not self.is_foreground(hwnd):
+            return None
+        a = self._window_map.get(int(hwnd))
+        if a is None or not a.visible:
+            return None
+        return a
+
     # ------------------------------------------------------------------
     def window_by_hwnd(self, hwnd):
         return self._window_map.get(hwnd)
@@ -691,7 +746,32 @@ class MascotEnvironment:
     # ------------------------------------------------------------------
     def _candidates(self):
         """
-        宠物所在列上的窗口（可作为地面/天花板）/ Windows in the mascot's column.
+        可作为地面/天花板的窗口：**只认当前前台窗口**。
+
+        1.1.2 起这里从「宠物所在列上的**所有**窗口」收窄为「**前台**窗口」。
+
+        **为什么收窄。** 以前是遍历全部窗口，谁的顶边跟宠物当前高度对得上，
+        就把谁当成地面。于是会出现这种情况：宠物正站在窗口 A 的顶边上，用户
+        切到窗口 B —— A 退到背景去了，但 `floor` 仍然返回 A 的顶边。宠物接着
+        在 A 的顶边上一路走，而 A 此刻被 B 挡着/缩到后面去，用户看到的就是
+        **宠物在半空中凭空位移**（正是在窗口上走，但那个窗口已经不是前台，
+        视觉上「浮空」）。
+
+        更要命的是这条边会**一直**成立：`Behavior.xml` 里「地面に接しているとき」
+        那一组条件的判据正是 `floor.isOn(anchor)`，所以宠物会认定自己「站在
+        地面上」，触发「ワークエリアの下辺を歩く」这类**地面**动作 —— 而它其实
+        悬在半空。
+
+        **只认前台窗口就自然解决了**：前台切到 B 之后，A 不再是候选，`floor`
+        立刻变回 `NOT_ON_BORDER`，宠物脚下的边消失 → 动作报 LostGround →
+        行为层切成「落下する」→ 宠物真的掉回地面，然后正常走路。这就是
+        「窗口互动结束后回到地面行走」这条要求的实现方式：**不是把位置硬拽回
+        地面，而是让它诚实地掉下去**。
+
+        与 `Behavior.xml` 的条件保持一致：那一整套条件用的都是
+        `activeIE.topBorder` / `activeIE.bottomBorder` / `activeIE.leftBorder`
+        这些**前台窗口**的边，判定「地面/墙/天花板」时用的也是 `activeIE`。
+        引擎这里要是认全部窗口，两边对不上，行为就会挑到不该挑的动作。
 
         **排除几乎铺满工作区的窗口。** 桌面上会枚举到 `(-8,-8,1928,1040)`
         （explorer 桌面）和 `(0,0,1919,1080)`（Progman）这类伪窗口，它们不是
@@ -699,18 +779,40 @@ class MascotEnvironment:
         突变 —— 表现为「只有设置面板（全屏）时一切正常，一打开窗口化的 QQ
         就出问题」。
 
+        **Only the foreground window is a candidate.**  Considering every window
+        in the mascot's column meant that a background window's top edge could
+        still be "the floor": the pet kept walking along a window the user had
+        already switched away from — the reported "the pet moves through mid-air".
+        Worse, that edge kept satisfying `floor.isOn(anchor)`, so the behaviour
+        layer believed the pet was standing on the ground and picked ground
+        actions while it was hanging in the air.
+
+        With only the foreground window as a candidate, switching away makes the
+        edge vanish: the action reports LostGround, the behaviour layer switches
+        to "Fall", and the pet really drops back to the ground and walks.  That
+        is how "return to the ground after window interaction" is implemented —
+        not by teleporting it down, but by letting it honestly fall.
+
         **Full-screen windows are excluded.** Explorer enumerates pseudo-windows
         such as `(-8,-8,1928,1040)` and `(0,0,1919,1080)`; they are not
-        standable surfaces, yet a `top` that happens to line up with the mascot
-        flips the floor — the reason everything behaved while every other
+        standable surfaces, yet their `top` that happens to line up with the
+        mascot flips the floor — the reason everything behaved while every other
         window was full-screen but broke as soon as a windowed QQ appeared.
         """
         ax = self._mascot.anchor.x
-        out = []
-        for a in self._env.windows:
-            if a.visible and a.contains_x(ax) and not self._env.is_fullscreen_window(a):
-                out.append(a)
-        return out
+        active = self._env.active_ie
+        if not active.visible:
+            # 没有前台窗口（前台是铺满窗口，或前台是本程序自己的窗口）
+            # -> 没有任何窗口边可以站。
+            # No foreground window: there is no window edge to stand on.
+            return []
+        if not active.contains_x(ax):
+            # 前台窗口不在宠物这一列 -> 它的边够不着宠物。
+            # The foreground window is not in the pet's column.
+            return []
+        if self._env.is_fullscreen_window(active):
+            return []
+        return [active]
 
     @property
     def floor(self):
@@ -799,6 +901,82 @@ class MascotEnvironment:
     def get_wall(self, right=None, ignore_separator: bool = False):
         """原版 `getWall(boolean)` 的等价重载 / the original's overload."""
         return self.wall(right)
+
+    def wall_at(self):
+        """
+        宠物**实际贴住**的那条墙（不看朝向）/ The wall the mascot is actually on.
+
+        `wall()` 要先知道朝哪边才找得到边（`right` 参数），于是形成循环依赖：
+        **朝向决定找哪条墙，找哪条墙又该由位置决定**。爬墙时如果朝向是错的
+        （见 `wall_facing`），`wall()` 就会去查另一侧的边，判定不成立。
+
+        这里**先不看朝向**，直接按锚点位置在候选里找**真正贴着的那条**：
+        先找窗口的左右边，再找工作区的左右边。找到哪条就是哪条 ——
+        位置是事实，朝向只是宠物对这���事实的解读。
+
+        这个方法让「爬哪条墙」和「贴图朝哪边」解耦：先由位置定墙，再由墙
+        定朝向，方向就不会算歪。
+
+        Find the wall the mascot is actually touching, without consulting the
+        facing direction.  `wall()` needs to know which way the pet faces
+        before it can pick a side, which is circular: the facing decides which
+        wall to look for, and the wall should be what decides the facing.
+        Here the position alone picks the wall, and the wall can then decide
+        the facing — so the two stop fighting each other.
+        """
+        p = self._mascot.anchor
+        wa = self._env.work_area
+        for a in self._candidates():
+            if a.leftBorder.isOn(p):
+                return a.leftBorder
+            if a.rightBorder.isOn(p):
+                return a.rightBorder
+        if wa.leftBorder.isOn(p):
+            return wa.leftBorder
+        if wa.rightBorder.isOn(p):
+            return wa.rightBorder
+        return NOT_ON_BORDER
+
+    def facing_for_wall(self, wall):
+        """
+        贴着这条墙时，贴图该朝哪边 / Which way should the sprite face on this wall?
+
+        返回 True = 朝右。
+
+        规则来自 `Behavior.xml` 的判据，两种墙**方向相反**：
+
+        * **工作区的墙**（屏幕边缘）：`lookRight ? workArea.rightBorder :
+          workArea.leftBorder` —— 朝右就贴**右墙**。屏幕边缘在宠物的**外侧**，
+          所以面朝外侧才是「贴在边上」的自然姿态。
+        * **窗口的墙**：`lookRight ? activeIE.leftBorder :
+          activeIE.rightBorder` —— 朝右就贴**窗口的左边**。窗口边缘在宠物的
+          **内侧**，面朝窗口才是「趴在窗口上」的样子。
+
+        这两条规则不一致不是笔误，是两种边的几何关系不同：屏幕边在外面，
+        窗口边在里面。原版的行为表就是这么写的，引擎必须与之一致，
+        否则行为层挑不到「IEの壁を登る」这类动作，宠物贴图也就不会翻对。
+
+        屏幕边缘与窗口边缘 want opposite facings, and that is not a typo —
+        the geometry differs.  A screen edge lies *outside* the pet, a window
+        edge lies *inside* it, so facing the wall means different things in
+        the two cases.  The original behaviour table encodes exactly this,
+        and the engine has to agree with it or the behaviour layer never picks
+        "climb the window wall" and the sprite is never mirrored correctly.
+        """
+        if wall is None or wall is NOT_ON_BORDER:
+            return self._mascot.look_right
+        area = getattr(wall, "area", None)
+        if area is None:
+            return self._mascot.look_right
+        # 窗口的边：贴在窗口左边（leftBorder, right=False）-> 朝右；
+        # 贴在窗口右边（rightBorder, right=True）-> 朝左。
+        # A window edge: on the window's left (leftBorder) -> face right;
+        # on its right (rightBorder) -> face left.
+        if getattr(area, "hwnd", None) is not None:
+            return not bool(getattr(wall, "right", False))
+        # 工作区的边：贴在右墙（right=True）-> 朝右；贴在左墙 -> 朝左。
+        # A work-area edge: on the right wall (right=True) -> face right.
+        return bool(getattr(wall, "right", False))
 
     @property
     def wallBorder(self):

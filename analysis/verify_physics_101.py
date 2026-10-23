@@ -337,42 +337,78 @@ def main() -> int:
         restore()
         mgr.dismiss_all()
 
-    # 只认前台窗口：光标飘到别的窗口上也不跟过去
-    # Only the foreground window: a cursor on another window changes nothing.
+    # 1.1.3：**未被完全遮盖的窗口都可以接收交互**，选谁由「光标 + Z 序」决定
+    # Any window that is not fully covered can be interacted with; the cursor
+    # plus the Z order decide which one.
     restore = with_windows([(100, 100, 600, 400), (900, 300, 1500, 800)], fg=0)
     try:
-        env._update_active_ie()
-        check(env.activeIE.visible and env.activeIE.hwnd == 990000,
-              "activeIE = 前台窗口（rects[0]）",
-              "hwnd=%s" % env.activeIE.hwnd)
-        # 把光标挪到第二个窗口里，activeIE 必须完全不动
         # ⚠️ 连 dx/dy 一起存 —— 只恢复 x/y 会让下游的「输入回避区」按残留
         # 速度算出 421x180 而不是 420x160（踩过一次）。
         old_cursor = (env.cursor.x, env.cursor.y, env.cursor.dx, env.cursor.dy)
+        # 光标放在第一扇窗口里 -> 命中它
+        env.cursor.set(300, 200)
+        env._update_active_ie()
+        check(env.activeIE.visible and env.activeIE.hwnd == 990000,
+              "activeIE = 光标下的窗口（rects[0]）",
+              "hwnd=%s" % env.activeIE.hwnd)
+
+        # 光标挪到第二扇窗口里 -> 切过去（两扇都不遮对方，都能接收交互）
         env.cursor.set(1200, 500)
         env._update_active_ie()
-        check(env.activeIE.hwnd == 990000,
-              "光标停在别的窗口上时 activeIE 不跟着换（只跟前台窗口互动）",
-              "hwnd=%s" % env.activeIE.hwnd)
-        env.cursor.x, env.cursor.y, env.cursor.dx, env.cursor.dy = old_cursor
-
-        # 前台换成第二个窗口 -> 立刻切过去（这是"当前在用的窗口"）
-        env._foreground_hwnd = lambda: 990001
-        env._update_active_ie()
         check(env.activeIE.hwnd == 990001,
-              "前台窗口切换后 activeIE 跟着切",
+              "光标移到另一扇未遮盖的窗口时 activeIE 跟着切过去",
               "hwnd=%s" % env.activeIE.hwnd)
 
-        # 前台是本程序自己的窗口（设置面板/番茄钟）—— 不在窗口表里 -> 没有
-        env._foreground_hwnd = lambda: 12345
+        # 光标落在两扇窗口之外 -> 没有可交互窗口
+        env.cursor.set(1700, 900)
         env._update_active_ie()
         check(not env.activeIE.visible,
-              "前台是本程序窗口（不在可交互列表）时 activeIE 不可见")
+              "光标不在任何窗口上时没有 activeIE")
 
-        # 没有前台窗口（切换桌面/锁屏）-> 同样没有
-        env._foreground_hwnd = lambda: 0
-        env._update_active_ie()
-        check(not env.activeIE.visible, "没有前台窗口时 activeIE 不可见")
+        env.cursor.x, env.cursor.y, env.cursor.dx, env.cursor.dy = old_cursor
+    finally:
+        restore()
+        mgr.dismiss_all()
+
+    # ── Z 序 + 遮挡判定 ─────────────────────────────────────────────
+    section("1.1.3 遮挡判定：完全被盖住的窗口不参与交互")
+    # 第一扇在**上层**（列表靠前 = Z 序靠前），第二扇在下面
+    restore = with_windows([(100, 100, 600, 400), (200, 200, 500, 350)], fg=0)
+    try:
+        env.recompute_occlusion()
+        check(not env.is_occluded(990000),
+              "上层窗口没有被遮盖（可以接收交互）")
+        check(env.is_occluded(990001),
+              "下层窗口被上层完全盖住 -> 判定为遮盖（不能接收交互）")
+        check(env.interactive_window(990001) is None,
+              "被完全遮盖的窗口不再是可交互对象")
+        check(env.interactive_window(990000) is not None,
+              "未被遮盖的窗口仍然可交互")
+
+        # 露出半扇 -> 不算完全遮盖
+        restore2 = with_windows([(100, 100, 600, 400), (500, 200, 900, 350)], fg=0)
+        try:
+            env.recompute_occlusion()
+            check(not env.is_occluded(990001),
+                  "只露出一条边的窗口不算被完全遮盖（仍然可以交互）")
+            check(env.interactive_window(990001) is not None,
+                  "露出半扇的窗口仍是可交互对象")
+        finally:
+            restore2()
+
+        # 被遮盖的窗口不能当地面（这就是「虚空行走」的判定）
+        restore3 = with_windows([(100, 100, 600, 400), (200, 200, 500, 350)], fg=0)
+        try:
+            env.recompute_occlusion()
+            _p = mgr.summon(Pt(300, 200))    # 站在下层窗口的顶边上
+            if _p is not None:
+                _fl = _p.env.floor
+                _fl_hwnd = getattr(getattr(_fl, "area", None), "hwnd", None)
+                check(_fl_hwnd != 990001,
+                      "被完全遮盖的窗口不能当地面（避免虚空行走）",
+                      "floor=%s hwnd=%s" % (type(_fl).__name__, _fl_hwnd))
+        finally:
+            restore3()
     finally:
         restore()
         mgr.dismiss_all()

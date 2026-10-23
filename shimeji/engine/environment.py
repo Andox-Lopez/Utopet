@@ -394,6 +394,8 @@ class Environment:
         self.monitors: list[tuple[Area, Area]] = []   # (整屏, 工作区) / (full, work)
         self._window_map: dict[int, Area] = {}
         self._titles: dict[int, str] = {}
+        #: 被完全遮盖的窗口 hwnd 集合（每轮枚举后重算）/ fully covered hwnds
+        self._occluded: set[int] = set()
         self._tick = 0
         self.titles_filter: list[str] = []
         self.window_offset = (0, 0, 0, 0)   # x, y, width add, height add
@@ -513,6 +515,115 @@ class Environment:
             if hwnd not in seen:
                 a.clear_delta()
         self._window_map = seen
+        # 窗口顺序变了（有人被关掉、有人新开），遮挡关系也跟着变，
+        # 所以每轮枚举后重算一次。
+        # The stacking changed, so the occlusion relations changed too.
+        self.recompute_occlusion()
+
+    def recompute_occlusion(self) -> None:
+        """
+        重算「哪些窗口被完全遮盖」/ Recompute which windows are fully covered.
+
+        **判定规则：只有被其他窗口**完全**遮盖的窗口才算不可见。**
+        露出一条边的窗口仍然可以正常接收交互 —— 它在视觉上是存在的，
+        用户看得见，宠物爬上去也看得见。
+
+        **判据：Z 序 + 矩形覆盖。** `EnumWindows` 自上而下枚举，所以
+        `windows` 列表里**索引越小 = 层数越高**。一扇窗口只有在被**更高层**
+        的窗口把整个矩形盖住时，才算被完全遮盖。
+
+        用两层判据：
+        1. **快速路径**：某扇更高层的窗口直接包含它的整个矩形。
+        2. **采样**：窗口内部取 3×3 共 9 个点（内缩 1px，避开边界误判），
+           每个点都被某扇更高层窗口覆盖 → 判定为完全遮盖。
+           采样能处理「被好几扇窗口拼着盖住」的情况。
+
+        ⚠️ **铺满工作区的窗口不算遮挡者。** explorer 桌面
+        `(-8,-8,1928,1040)` 那种伪窗口矩形覆盖整块屏幕，把它当遮挡者的话，
+        **每一扇窗口都会被判成被遮盖**，等于整个功能瘫掉。它们在 Z 序里本来
+        就在最底层，不影响别人。
+
+        **Only windows covered *completely* count as hidden.**  A window that
+        peeks out by a single pixel is still visible, still interactable — the
+        user can see it and the pet climbing it looks right.
+
+        The test is **Z order plus rectangle coverage**: `EnumWindows` walks
+        top to bottom, so a lower index means a higher layer.  A window is
+        hidden only when a higher window covers its whole rectangle — either
+        outright, or in the aggregate (nine interior sample points).
+    """
+        self._occluded: set[int] = set()
+        n = len(self.windows)
+        for i, a in enumerate(self.windows):
+            if not a.visible:
+                continue
+            # 更高层的窗口 = 索引更小的那些
+            higher = self.windows[:i]
+            if not higher:
+                continue
+            if self._covered_by(a, higher):
+                self._occluded.add(a.hwnd)
+
+    def _covered_by(self, a: Area, higher: list[Area]) -> bool:
+        """a 是否被 higher 里的某扇窗口完全盖住 / Is a fully covered by higher?"""
+        # 快速路径：单扇窗口直接包含整个矩形
+        for b in higher:
+            if not b.visible:
+                continue
+            if self.is_fullscreen_window(b):
+                # 铺满工作区的伪窗口不作为遮挡者（见 recompute_occlusion 的说明）
+                continue
+            if (b.left <= a.left and b.top <= a.top
+                    and b.right >= a.right and b.bottom >= a.bottom):
+                return True
+        # 采样：内部 3×3 点是否全被覆盖
+        l, t, r, b = a.left, a.top, a.right, a.bottom
+        if r - l < 3 or b - t < 3:
+            # 太小的窗口：直接看中心点
+            pts = [(l + 1, t + 1)]
+        else:
+            xs = (l + 1, (l + r) // 2, r - 1)
+            ys = (t + 1, (t + b) // 2, b - 1)
+            pts = [(x, y) for y in ys for x in xs]
+        for (px, py) in pts:
+            covered = False
+            for w in higher:
+                if not w.visible or self.is_fullscreen_window(w):
+                    continue
+                if w.left <= px <= w.right and w.top <= py <= w.bottom:
+                    covered = True
+                    break
+            if not covered:
+                return False
+        return True
+
+    def is_occluded(self, hwnd: int | None) -> bool:
+        """
+        这扇窗口是不是被完全遮盖了 / Is this window completely covered?
+
+        被完全遮盖的窗口**不参与任何窗口交互**：不能当地面、不能爬、不能拖。
+        用户看不见它，宠物在上面走就是「虚空行走」。
+        A fully covered window takes part in no window interaction at all.
+        """
+        if not hwnd:
+            return False
+        return int(hwnd) in getattr(self, "_occluded", set())
+
+    def interactive_window(self, hwnd: int | None):
+        """
+        这个 hwnd 现在还能作为互动对象吗 / Is this window still interactable?
+
+        三个条件都要满足：**还在窗口表里**、**没被最小化**、**没被完全遮盖**。
+        All three: still in the window table, not minimised, not fully covered.
+        """
+        if not hwnd:
+            return None
+        a = self._window_map.get(int(hwnd))
+        if a is None or not a.visible:
+            return None
+        if self.is_occluded(hwnd):
+            return None
+        return a
 
     def is_fullscreen_window(self, a: Area) -> bool:
         """
@@ -559,57 +670,69 @@ class Environment:
 
     def _update_active_ie(self):
         """
-        activeIE = **前台（活动）窗口** / The **foreground (active)** window.
+        activeIE = **光标命中的最上层、且未被完全遮盖的窗口**。
 
-        只看前台窗口，不再跟着光标走。光标扫过别的窗口（后台的聊天窗口、
-        资源管理器、视频）时，宠物不该跑过去爬它 —— 用户说的是「宠物只会和
-        最前台窗口互动」。原版按光标选窗口，在「鼠标随手乱放」的时代没问题，
-        但现在桌面上常驻十几二十个窗口，光标多半落在**没在用的那个**上。
+        The topmost window under the cursor that is not fully covered.
 
-        Only the foreground window counts; the cursor no longer decides.  The
-        original picked the window under the cursor, which was fine when a
-        desktop held a handful of windows — today the cursor usually rests on
-        some background window, and the pet would run off to climb *that*.
+        **判定规则：未被完全遮盖的窗口都可以接收交互。**
+        1.1.1 一度改成「只跟前台窗口互动」，1.1.2 又把「可站立面」也收窄到
+        前台那一个。实测这太窄了：桌面上同时开着好几个窗口时，用户想让宠物
+        去爬哪一个，应该由**用户把鼠标放到哪一扇**决定，而不是由「谁恰好是
+        前台」决定 —— 前台窗口和用户想互动的那扇经常不是同一扇（比如用户
+        正在看 A，却想让宠物去爬后面的 B）。
+
+        现在的规则回到「按光标 + Z 序」：
+        * `EnumWindows` **自上而下**枚举，所以列表里第一个包含光标点的窗口
+          就是**最上层**的那扇 —— 这天然就是「没有被完全遮盖」的那扇。
+        * 露出半扇的窗口同样算数：只要用户看得见它的一部分，它就能接收交互。
 
         **跳过全屏/铺满窗口。** 这是「窗口底部爬行」误触发的根因：
-        前台那个铺满工作区的窗口（QQ 最大化、游戏、贴屏视频）`bottom` 恰好
-        压在工作区底边上，宠物站在地面时 `activeIE.bottomBorder.isOn(anchor)`
-        **恒为真**，Behavior.xml 里那 15+ 条 `activeIE.*Border` 条件就会持续
-        命中「IEの下辺を伝う」「IEの天井を歩く」这类爬行。
+        铺满工作区的窗口（QQ 最大化、游戏、贴屏视频）`bottom` 恰好压在工作区
+        底边上，宠物站在地面时 `activeIE.bottomBorder.isOn(anchor)` **恒为
+        真**，Behavior.xml 里那 15+ 条 `activeIE.*Border` 条件就会持续命中
+        「IEの下辺を伝う」「IEの天井を歩く」这类爬行。
 
-        **Full-screen windows are skipped.**  A maximised foreground window's
-        bottom edge coincides with the work-area bottom, making
+        **Full-screen windows are skipped.**  A maximised window's bottom edge
+        coincides with the work-area bottom, making
         `activeIE.bottomBorder.isOn(anchor)` permanently true and firing the
         "crawl along the window bottom" behaviour over and over.
 
-        跳过之后**不再往下找**。以前会继续枚举到后面那个被铺满窗口完全盖住的
-        窗口，于是宠物会在一条**看不见的边**上爬（用户看到的是「宠物在半空中
-        凭空做出爬窗动作」）。铺满窗口之下没有「可交互的可见窗口」，这时正确
-        的答案是**没有** activeIE。
+        跳过之后**不再往下找**。继续枚举找到的是被铺满窗口**完全盖住**的
+        那一扇，用户根本看不见它 —— 宠物在一条看不见的边上爬，就是
+        「虚空行走」。这时正确的答案是**没有** activeIE。
 
-        No falling through to the windows *behind* it: that produced the
-        reported "the pet does climbing animations in mid-air" on an invisible
-        edge.  Beneath a work-area-filling window there is no visible window to
-        interact with, so the honest answer is *no* activeIE.
+        No falling through to the windows *behind* it: what lies behind a
+        work-area-filling window is completely covered, the user cannot see it,
+        and the pet climbing that invisible edge is exactly the "walking
+        through mid-air" bug.  The honest answer there is *no* activeIE.
 
-        前台窗口是**本程序自己的窗口**（设置面板、番茄钟、任务栏面板）时同样
-        算「没有」—— 它们被 `win32.list_windows()` 排除在外，不在窗口表里。
+        本程序自己的窗口（设置面板、番茄钟、任务栏面板）同样算「没有」——
+        它们被 `win32.list_windows()` 排除在外，不在窗口表里。
         """
         best = None
         blocked = None
-        hwnd = self._foreground_hwnd()
-        candidate = self._window_map.get(hwnd) if hwnd else None
-        if candidate is not None:
-            if self.is_fullscreen_window(candidate):
-                blocked = candidate
+        cx, cy = self.cursor.x, self.cursor.y
+        # `self.windows` 的顺序 = Z 序（顶层在前）/ the list is in Z order
+        for a in self.windows:
+            if not a.visible:
+                continue
+            if not (a.left <= cx <= a.right and a.top <= cy <= a.bottom):
+                continue
+            # 铺满工作区的窗口不是可交互的「窗口」/ a work-area-filling
+            # window is not an interactable window
+            if self.is_fullscreen_window(a):
+                blocked = a
             else:
-                best = candidate
+                best = a
+            # 命中即停：**不往下找**。再往下就是被完全盖住的窗口了。
+            # Stop at the first hit: everything below is fully covered.
+            break
         title = self._titles.get(blocked.hwnd, "") if blocked is not None else ""
         self.blocked_ie_title = title
         if title != self._blocked_ie_prev:
             self._blocked_ie_prev = title
             if title:
-                log.info("activeIE 跳过铺满窗口 %r（前台窗口最大化/全屏，不参与窗口交互）",
+                log.info("activeIE 跳过铺满窗口 %r（最大化/全屏窗口不参与窗口交互）",
                          title)
         if best is None:
             self.active_ie.visible = False
@@ -628,61 +751,6 @@ class Environment:
         window to point at.
         """
         return win32.get_foreground_window()
-
-    def is_foreground(self, hwnd: int | None) -> bool:
-        """
-        这个 hwnd 现在还是前台窗口吗 / Is this window still the foreground one?
-
-        **窗口互动全程都要查这个。** 1.1.1 起互动目标只认前台窗口，但「只认
-        前台」有两层含义，第二层很容易漏：
-
-        1. **选目标时**认前台 —— 已有 `_update_active_ie()` 负责。
-        2. **互动过程中**仍然认前台 —— 宠物抱着窗口走了两秒，用户切了窗口，
-           那个窗口已经不是前台了，宠物却还在拖它、爬它。
-
-        第 2 层漏掉的表现正是用户说的「不得与非前台窗口发生交互」：切走之后，
-        宠物还在跟一个后台窗口较劲，把用户的旧窗口拖来拖去。
-
-        注意这里**不查窗口表**，只比 hwnd：窗口表每 tick 刷新，可能已经把这个
-        窗口划掉了（最小化/关闭），但「它是不是前台」是操作系统的事，跟我们
-        的缓存无关。用缓存判会得到「窗口一被最小化就不再算前台」的假象。
-        Here we compare handles only and do not consult the window table: the
-        table is refreshed per tick and may already have dropped the window
-        (minimised or closed), but "is it the foreground window" is the OS's
-        business, not our cache's.  Consulting the cache would fake a
-        "minimised windows are no longer foreground" rule.
-        """
-        if not hwnd:
-            return False
-        try:
-            fg = self._foreground_hwnd()
-        except Exception:
-            # 拿不到前台窗口时**不**判定为「不是前台」：宁可让互动继续，
-            # 也不要因为一次查询失败就把宠物从窗口上踢下来。
-            # If the foreground cannot be read, do not claim it is "not
-            # foreground": keeping the interaction is safer than dropping the
-            # pet off a window over one failed query.
-            log.debug("get_foreground_window failed; assuming unchanged")
-            return True
-        return int(fg or 0) == int(hwnd)
-
-    def interactive_window(self, hwnd: int | None):
-        """
-        这个 hwnd 现在还能作为互动对象吗 / Is this window still interactable?
-
-        比 `is_foreground()` 多一层：**窗口必须还在**（没被关掉/最小化）。
-        前台但已经不可见 —— 比如被最小化后又被还原 —— 不该再被拖着走。
-        `is_foreground()` plus one more condition: the window must still be
-        around (not closed or minimised).
-
-        返回那个 Area，或者 None。
-        """
-        if not self.is_foreground(hwnd):
-            return None
-        a = self._window_map.get(int(hwnd))
-        if a is None or not a.visible:
-            return None
-        return a
 
     # ------------------------------------------------------------------
     def window_by_hwnd(self, hwnd):
@@ -746,32 +814,31 @@ class MascotEnvironment:
     # ------------------------------------------------------------------
     def _candidates(self):
         """
-        可作为地面/天花板的窗口：**只认当前前台窗口**。
+        可作为地面/天花板的窗口：**宠物所在列上、且未被完全遮盖的那些**。
 
-        1.1.2 起这里从「宠物所在列上的**所有**窗口」收窄为「**前台**窗口」。
-
-        **为什么收窄。** 以前是遍历全部窗口，谁的顶边跟宠物当前高度对得上，
-        就把谁当成地面。于是会出现这种情况：宠物正站在窗口 A 的顶边上，用户
-        切到窗口 B —— A 退到背景去了，但 `floor` 仍然返回 A 的顶边。宠物接着
-        在 A 的顶边上一路走，而 A 此刻被 B 挡着/缩到后面去，用户看到的就是
-        **宠物在半空中凭空位移**（正是在窗口上走，但那个窗口已经不是前台，
-        视觉上「浮空」）。
+        **为什么不能是「全部窗口」。** 以前是遍历全部窗口，谁的顶边跟宠物
+        当前高度对得上就把谁当成地面。于是：宠物站在窗口 A 的顶边上，用户把
+        A 拖到别的窗口后面 → A 被**完全遮盖**、用户根本看不见它 → 但 `floor`
+        仍然返回 A 的顶边 → 宠物接着在 A 的顶边上一路走。用户看到的就是
+        **宠物在半空中凭空位移**（明明是在某个窗口上走，可那个窗口已经看不
+        见了，视觉上就是「浮空」）。
 
         更要命的是这条边会**一直**成立：`Behavior.xml` 里「地面に接しているとき」
         那一组条件的判据正是 `floor.isOn(anchor)`，所以宠物会认定自己「站在
         地面上」，触发「ワークエリアの下辺を歩く」这类**地面**动作 —— 而它其实
         悬在半空。
 
-        **只认前台窗口就自然解决了**：前台切到 B 之后，A 不再是候选，`floor`
-        立刻变回 `NOT_ON_BORDER`，宠物脚下的边消失 → 动作报 LostGround →
-        行为层切成「落下する」→ 宠物真的掉回地面，然后正常走路。这就是
-        「窗口互动结束后回到地面行走」这条要求的实现方式：**不是把位置硬拽回
-        地面，而是让它诚实地掉下去**。
+        **为什么也不能是「仅前台窗口」。** 1.1.2 一度收窄成只认前台那一个，
+        那样确实能消除虚空行走，但把范围收得太窄了：桌面上同时开着好几个窗口
+        时，用户想让宠物去爬哪一扇，应该由**他把鼠标放到哪一扇**决定，而不是
+        由「谁恰好是前台」决定 —— 前台窗口和用户想互动的那扇经常不是同一扇。
 
-        与 `Behavior.xml` 的条件保持一致：那一整套条件用的都是
-        `activeIE.topBorder` / `activeIE.bottomBorder` / `activeIE.leftBorder`
-        这些**前台窗口**的边，判定「地面/墙/天花板」时用的也是 `activeIE`。
-        引擎这里要是认全部窗口，两边对不上，行为就会挑到不该挑的动作。
+        **现在的规则：未被完全遮盖的窗口都可以当地面。** 被完全遮盖的排除 ——
+        用户看不见它，宠物在上面走就是虚空行走；露出半扇的仍然算数，用户看得
+        见它的边，宠物站在那条边上也是合理的。
+
+        判定「完全遮盖」靠 `Environment.recompute_occlusion()`（Z 序 + 矩形
+        覆盖，见那里的说明）。
 
         **排除几乎铺满工作区的窗口。** 桌面上会枚举到 `(-8,-8,1928,1040)`
         （explorer 桌面）和 `(0,0,1919,1080)`（Progman）这类伪窗口，它们不是
@@ -779,40 +846,41 @@ class MascotEnvironment:
         突变 —— 表现为「只有设置面板（全屏）时一切正常，一打开窗口化的 QQ
         就出问题」。
 
-        **Only the foreground window is a candidate.**  Considering every window
-        in the mascot's column meant that a background window's top edge could
-        still be "the floor": the pet kept walking along a window the user had
-        already switched away from — the reported "the pet moves through mid-air".
-        Worse, that edge kept satisfying `floor.isOn(anchor)`, so the behaviour
-        layer believed the pet was standing on the ground and picked ground
-        actions while it was hanging in the air.
+        **Windows that are not fully covered can be a floor.**  Considering
+        *every* window meant that a fully covered window's top edge could
+        still be "the floor": the pet kept walking along an edge the user
+        could no longer see — the reported "the pet moves through mid-air".
+        Worse, that edge kept satisfying `floor.isOn(anchor)`, so the
+        behaviour layer believed the pet was standing on the ground and
+        picked ground actions while it was hanging in the air.
 
-        With only the foreground window as a candidate, switching away makes the
-        edge vanish: the action reports LostGround, the behaviour layer switches
-        to "Fall", and the pet really drops back to the ground and walks.  That
-        is how "return to the ground after window interaction" is implemented —
-        not by teleporting it down, but by letting it honestly fall.
+        Restricting this to the *foreground* window (1.1.2) also removed the
+        floating, but narrowed the scope too far: with several windows open,
+        which one the pet should climb should be decided by where the user
+        puts the cursor, not by which window happens to be in front.
 
-        **Full-screen windows are excluded.** Explorer enumerates pseudo-windows
-        such as `(-8,-8,1928,1040)` and `(0,0,1919,1080)`; they are not
-        standable surfaces, yet their `top` that happens to line up with the
-        mascot flips the floor — the reason everything behaved while every other
-        window was full-screen but broke as soon as a windowed QQ appeared.
+        So the rule is now: **not fully covered**.  A window the user cannot
+        see is excluded — walking on it would be walking on air — while a
+        window that peeks out by a pixel still counts, because the user can
+        see its edge.
         """
         ax = self._mascot.anchor.x
-        active = self._env.active_ie
-        if not active.visible:
-            # 没有前台窗口（前台是铺满窗口，或前台是本程序自己的窗口）
-            # -> 没有任何窗口边可以站。
-            # No foreground window: there is no window edge to stand on.
-            return []
-        if not active.contains_x(ax):
-            # 前台窗口不在宠物这一列 -> 它的边够不着宠物。
-            # The foreground window is not in the pet's column.
-            return []
-        if self._env.is_fullscreen_window(active):
-            return []
-        return [active]
+        out = []
+        for a in self._env.windows:
+            if not a.visible:
+                continue
+            if not a.contains_x(ax):
+                continue
+            if self._env.is_fullscreen_window(a):
+                continue
+            # 被完全遮盖的窗口不能当地面：用户看不见它，宠物在上面走
+            # 就是虚空行走。
+            # A fully covered window cannot be the floor: the user cannot see
+            # it, so walking on it would be walking on air.
+            if self._env.is_occluded(a.hwnd):
+                continue
+            out.append(a)
+        return out
 
     @property
     def floor(self):

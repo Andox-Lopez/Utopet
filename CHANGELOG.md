@@ -10,6 +10,48 @@
 
 ---
 
+## [1.1.3] — 2026-10-23
+
+**窗口交互改回「看得见就能互动」，虚空行走也修好了。**
+**Any visible window can be interacted with again, and the pet no longer walks through mid-air.**
+
+### 🐛 修复 Fixed
+
+- **任何没有被完全遮盖的窗口都可以正常接收交互，只有被完全盖住的才禁止。**
+  1.1.1 起互动对象被改成了「当前前台窗口」，范围收得太窄：桌面上同时开着
+  好几个窗口时，用户想让宠物去爬哪一扇，应该由**他把鼠标放到哪一扇**决定，
+  而不是由「谁恰好是前台」决定 —— 前台窗口和用户想互动的那扇经常不是同一扇
+  （比如你正在看 A，却想让宠物去爬后面的 B）。
+  现在的规则回到「光标 + Z 序」：`EnumWindows` 自上而下枚举，光标落在哪扇
+  窗口上就找哪扇。**露出半扇的窗口同样算数** —— 用户看得见它的一角，它就能
+  接收交互；只有被**完全**盖住、用户根本看不见的，才排除在外。
+  **Any window that is not fully covered can be interacted with again.**  The
+  target is picked by the cursor and the Z order, so a window that peeks out
+  from behind another one still counts — only a window the user cannot see at
+  all is excluded.
+- **虚空行走（宠物在半空中位移）修好了。** 以前宠物站在某扇窗口顶边时，
+  你把那扇窗口拖到别的窗口后面 —— 它被完全遮盖、用户根本看不见了 —— 但引擎
+  仍然把它当作可以站立的「地面」，宠物继续在一条看不见的边上走。用户看到
+  的就是宠物凭空移动。现在**被完全遮盖的窗口不再当地面**：脚下的边消失 →
+  动作报 LostGround → 切成「落下する」→ 宠物真的掉回地面再正常走路。
+  判据是 Z 序 + 矩形覆盖（整扇窗口被更高层的窗口包住才算遮盖）。
+  **The "walking through mid-air" bug is fixed.**  A fully covered window is
+  no longer a standable surface: the edge underfoot disappears, the action
+  reports LostGround, and the pet honestly falls back to the ground.
+- **拖动 / 投掷窗口时，目标被完全遮盖就立刻放手。** 拖一扇用户看不见的窗口
+  毫无意义 —— 用户只看到自己的窗口莫名其妙跟着动，却完全不明白发生了什么。
+  **Carrying or throwing stops as soon as the target is fully covered.**
+
+### 🔧 变更 Changed
+
+- **窗口层叠时的判定保持一致。** 三扇窗口层层压住时，最上层的那扇可以互动，
+  被压在下面的不行；把最上层挪开后，下面那扇立刻变成可互动对象。
+  **Consistent behaviour with stacked windows:** the topmost one is
+  interactable, the ones buried under it are not — and moving the top one
+  away immediately frees the one below.
+
+---
+
 ## [1.1.2] — 2026-10-23
 
 **窗口互动不再出悬空位移，爬墙的朝向也翻对了。**

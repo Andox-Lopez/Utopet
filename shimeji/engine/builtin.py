@@ -468,33 +468,28 @@ class _IEFollowMixin:
     用户反馈的「关掉那个和窗口互动也不好使」就是第 2 种：拖动过程中换了窗口，
     位移一直被重置。锁定 hwnd 之后，窗口被关掉（`IsWindow` 失败）才释放。
 
-    **但锁定不等于无条件跟到底 —— 失焦即放手。**
+    **但锁定不等于无条件跟到底 —— 被完全遮盖即放手。**
 
-    1.1.2 补上这一条：锁定的那扇窗口**一旦不再是前台窗口**，立刻放弃跟随。
-    理由很直接：用户已经切走了，这个窗口对他来说是背景，宠物再去拖它就是
-    「跟非前台窗口发生交互」—— 用户明明在用别的窗口，宠物却把他刚才那个
-    拖来拖去。
+    1.1.3 把判定从「不再是前台」换成「**被完全遮盖**」。理由：可交互的判据
+    是**用户看不看得见**，不是「谁在最前面」。用户把窗口拖到另一个窗口
+    后面（完全被盖住）→ 那扇窗口用户根本看不见 → 宠物拖着它走就纯属莫名其妙。
+    而窗口只是「退到后面但还露出一条边」时，用户看得见它，互动继续是合理的。
 
     放手的**时机**也重要：不是等动作结束才放，而是**当帧**就放。否则宠物会
-    继续带着一个已经失焦的窗口再走一段，用户看到的正是「切走之后宠物还在
-    拖着那个窗口跑」。
+    继续带着一扇已经看不见的窗口再走一段。
 
-    这里**不重新选目标**（不改成跟着新的前台窗口）：那会让宠物在用户切窗口的
-    一瞬间猛地转向另一个窗口，抱着它继续走 —— 比拖着旧窗口更突兀，而且旧
-    窗口会莫名其妙地开始跟着动。**放手、让宠物自己回到地面**才是对的。
+    这里**不重新选目标**：那会让宠物在一瞬间猛地转向另一个窗口，抱着它继续
+    走 —— 比拖着旧窗口更突兀。**放手、让宠物自己回到地面**才是对的。
 
     The locked window is followed for the action's duration — but the lock is
-    not unconditional: **losing the foreground releases it.**  Once the user
-    has switched away, that window is background, and dragging it around is
-    precisely "interacting with a non-foreground window".  The release happens
-    on the very tick, not at the end of the action, so the pet never spends
-    more time dragging a background window than the tick in which it lost
-    focus.
+    not unconditional: **being fully covered releases it.**  The test is
+    whether the *user can see the window*, not which one is in front.  A
+    window dragged completely behind another one is invisible, and dragging
+    it around is pure nonsense; a window that merely peeks out from behind
+    another is still visible, so the interaction carries on.
 
-    We deliberately do **not** re-target the new foreground window: the pet
-    would suddenly grab an unrelated window and drag that instead, and the
-    abandoned window would mysteriously start moving.  Releasing and letting
-    the pet return to the ground is the sane outcome.
+    The release happens on the very tick.  We deliberately do **not** re-target
+    another window: the pet would suddenly grab something unrelated.
     """
 
     def _ie_init(self):
@@ -518,9 +513,11 @@ class _IEFollowMixin:
         if a is None or not a.visible:
             self._ie_hwnd = None
             return
-        # 1.1.2：这扇窗口已经不是前台了 -> 立刻放手，不再拖它。
-        # The window is no longer the foreground one: let go right away.
-        if not env.is_foreground(hwnd):
+        # 1.1.3：这扇窗口已经被**完全遮盖** -> 立刻放手，不再拖它。
+        # 用户看不见它了，宠物拖着一扇看不见的窗口走，用户只会觉得莫名其妙。
+        # The window has been fully covered: let go.  The user cannot see it
+        # any more, so dragging an invisible window just looks bizarre.
+        if env.is_occluded(hwnd):
             self._ie_hwnd = None
             return
         lx, ly = self._ie_last
@@ -597,16 +594,13 @@ class ThrowIE(_Animated):
             # No window to throw: the mascot still finishes its own animation.
             if a is None or not a.visible:
                 self._ie_hwnd = None
-            # 1.1.2：目标窗口已经不是前台了 -> 停止投掷。
-            # 往一个用户已经切走的窗口上扔东西，是「与非前台窗口交互」；
-            # 而且那个窗口此刻多半被别的窗口盖着，扔了用户也看不见，只会觉得
-            # 「我的窗口莫名其妙飞走了」。
-            # The target is no longer the foreground window: stop throwing.
-            # Throwing at a window the user has switched away from is
-            # interacting with a non-foreground window, and it is usually
-            # hidden behind another one, so the user just sees their window
-            # fly off for no visible reason.
-            elif not env.is_foreground(hwnd):
+            # 1.1.3：目标窗口已经被**完全遮盖** -> 停止投掷。
+            # 往一扇用户看不见的窗口上扔东西毫无意义 —— 用户只看到自己的
+            # 窗口莫名其妙飞走了，却完全不明白发生了什么。
+            # The target has been fully covered: stop throwing.  Flinging a
+            # window the user cannot see is pointless — they just watch their
+            # window fly off with no idea why.
+            elif env.is_occluded(hwnd):
                 self._ie_hwnd = None
             elif not win32.is_zoomed(a.hwnd):
                 self.vy += self.gravity

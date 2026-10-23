@@ -477,12 +477,25 @@ def run_tests(dry: bool, skip_installer: bool) -> None:
 # 步骤 5 · 发布
 # ----------------------------------------------------------------------
 def publish(version: str, setup_path_: str, dry: bool, assume_yes: bool,
-            message: str | None) -> None:
+            message: str | None, prerelease: str | None = None) -> None:
     step(5, 5, "推送 GitHub 并创建 Release")
 
     msg = commit_message(version, message)
     files = dirty_files()
-    tag = "v%s" % version
+    # ---- 测试版用**独立 tag** ----
+    # A pre-release gets its own tag.
+    #
+    # ⛔ 不能复用 `v1.1.2`：tag 一旦推上去就收不回来（强推会被 GitHub 拒绝，
+    # 删 tag 又会让已经下载过的人拿到错乱的引用）。将来 1.1.2 正式发布时需要
+    # 那个 tag，所以测试版必须另起一个（`v1.1.2-beta.1`）。
+    # Reusing `v1.1.2` is a trap: a pushed tag is effectively irreversible
+    # (force-push is rejected, deleting it leaves anyone who already
+    # downloaded pointing at a confusing ref).  The real 1.1.2 release will
+    # need that tag, so a pre-release must use its own (`v1.1.2-beta.1`).
+    if prerelease:
+        tag = "v%s-%s" % (version, prerelease)
+    else:
+        tag = "v%s" % version
 
     # ---- 5.1 提交 ----
     if files:
@@ -560,6 +573,9 @@ def publish(version: str, setup_path_: str, dry: bool, assume_yes: bool,
         say("    提交    %s" % msg)
     say("    推送    git push %s %s" % (REMOTE, BRANCH))
     say("    Release %s  tag=%s" % (version, tag))
+    if prerelease:
+        say("    类型    **测试版（pre-release）** —— 不占用「最新版本」位置，")
+        say("            用户在 Releases 列表里要自己点进去才看得到。")
     say("    附件    %s（%s）"
         % (os.path.basename(setup_path_),
            human(os.path.getsize(setup_path_)) if os.path.exists(setup_path_) else "?"))
@@ -606,17 +622,29 @@ def publish(version: str, setup_path_: str, dry: bool, assume_yes: bool,
     _write_notes(version, notes_path)
     try:
         repo = _gh_repo_slug(REMOTE)
+        title = "Utopet %s" % version
         cmd = ["gh", "release", "create", tag,
                "--repo", repo,
-               "--title", "Utopet %s" % version,
-               "--notes-file", notes_path,
-               setup_path_]
-        say("  $ gh release create %s --repo %s …" % (tag, repo))
+               "--title", title,
+               "--notes-file", notes_path]
+        if prerelease:
+            # `--prerelease` 让 GitHub 把它标成测试版：不会成为 "Latest"，
+            # 用户默认也看不到，得自己点进 Releases 才找得到。这正是测试版
+            # 该有的待遇 —— 不跟正式版抢「最新版本」的位置。
+            # `--prerelease` keeps it out of the "Latest" slot: users do not
+            # see it by default, which is exactly right for a test build.
+            cmd.append("--prerelease")
+            title = "%s（测试版 %s）" % (title, prerelease)
+            cmd[cmd.index("--title") + 1] = title
+        cmd.append(setup_path_)
+        say("  $ gh release create %s --repo %s%s …" % (
+            tag, repo, " --prerelease" if prerelease else ""))
         rc, out = capture(cmd, timeout=900)
         if rc != 0:
             say(out.strip()[-2000:])
             raise Abort("gh release create 返回码 %d" % rc)
-        ok("Release 已创建并附上安装包")
+        ok("Release 已创建并附上安装包%s"
+           % ("（测试版）" if prerelease else ""))
         say("")
         say("  %s" % (out.strip().splitlines()[-1] if out.strip() else ""))
     finally:
@@ -677,6 +705,12 @@ def main() -> int:
                          "产物留在 dist\\ 与 output\\，确认满意后再跑一次"
                          "（去掉本参数）就能发出去。"
                          " Build and package only: no commit, no push, no Release.")
+    ap.add_argument("--prerelease", default=None, metavar="SUFFIX",
+                    help="发成**测试版**：tag 用 v<版本>-<SUFFIX>（如 beta.1），"
+                         "Release 标记为 pre-release，不占用「最新版本」位置。"
+                         " Publish as a pre-release: the tag becomes "
+                         "v<version>-<SUFFIX> and the Release is flagged "
+                         "pre-release, so it does not take the Latest slot.")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -707,7 +741,8 @@ def main() -> int:
             say("  想先看看会做什么，加 --dry-run。")
             say("=" * 68)
             return 0
-        publish(version, setup, args.dry_run, args.yes, args.message)
+        publish(version, setup, args.dry_run, args.yes, args.message,
+                prerelease=args.prerelease)
     except Abort as e:
         say("")
         if e.why:

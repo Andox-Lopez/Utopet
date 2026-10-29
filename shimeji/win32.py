@@ -240,6 +240,11 @@ _user32.GetMonitorInfoW.restype = wintypes.BOOL
 _user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
 _user32.MonitorFromPoint.restype = ctypes.c_ulong
 
+# ⭐ 窗口 -> 所在显示器。用来把窗口移动限制在**它当前所在的那块屏幕**内，
+# 从而保证它不会跑出当前虚拟桌面（见 `move_window_at()` 的说明）。
+_user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+_user32.MonitorFromWindow.restype = ctypes.c_ulong
+
 _user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 _user32.GetCursorPos.restype = wintypes.BOOL
 _user32.WindowFromPoint.argtypes = [wintypes.POINT]
@@ -433,13 +438,119 @@ def window_at(x: int, y: int) -> tuple[int, tuple[int, int, int, int]] | None:
     return hwnd, r
 
 
-def move_window(hwnd: int, x: int, y: int) -> bool:
-    """只移动、不改变尺寸和 Z 序 / Move a window without resizing or restacking it."""
+#: `MonitorFromWindow` 的第二参数：窗口不在任何显示器上时选最近的
+#: `MONITOR_DEFAULTTONEAREST` = 2
+MONITOR_DEFAULTTONEAREST = 2
+
+
+def _monitor_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """
+    窗口所在显示器的**完整屏幕范围** / The full screen rect of the monitor the window is on.
+
+    用 `MonitorFromWindow` 而不是 `MonitorFromPoint`：窗口可能已经被拖到屏幕
+    边缘之外，用光标反推所属的显示器会错。
+
+    `MonitorFromWindow` rather than `MonitorFromPoint`: the window may already
+    hang over the edge of the screen, so the monitor under the *cursor* would
+    be the wrong one.
+    """
     try:
-        return bool(_user32.SetWindowPos(hwnd, 0, _p(x), _p(y), 0, 0,
-                                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE))
+        hmon = _user32.MonitorFromWindow(wintypes.HWND(hwnd),
+                                         MONITOR_DEFAULTTONEAREST)
+        if not hmon:
+            return None
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not _user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+            return None
+        rc = info.rcMonitor
+        return rc.left, rc.top, rc.right, rc.bottom
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def clamp_to_desktop(hwnd: int, x: int, y: int, w: int, h: int) -> tuple[int, int]:
+    """
+    把目标位置夹到**窗口当前所在显示器**的屏幕范围内。
+
+    -> Clamp the target position into the screen rect of the monitor the
+    -> window currently sits on.
+
+    ⭐⭐ **为什么这个夹取是必须的（Windows 虚拟桌面）** ⭐⭐
+
+    Windows 的虚拟桌面（Virtual Desktop）是按**全局坐标**分区的：桌面 1 占
+    主显示器的坐标区域（单显示器就是 0,0-1920,1080），桌面 2 就在它右侧或
+    下方的**另一块坐标区域**。
+
+    **把窗口移到当前桌面范围之外的坐标，Windows 会把它自动移到那个坐标所在
+    的虚拟桌面。** 用户就再也切不回那扇窗口了 —— 只能关掉软件重开。
+
+    这正是本项目测试里把真实应用窗口挪到 `work_area.right + 500`（2420）
+    造成的后果。
+
+    所以任何移动窗口的调用都必须先经过这里。用窗口**当前所在**的显示器
+    （而不是主显示器）做夹取：多显示器时窗口可能在副屏上，而副屏在当前
+    虚拟桌面里也有自己的坐标区域。
+
+    A move to a coordinate outside the current virtual desktop makes Windows
+    relocate the window to the desktop owning that coordinate, and the user
+    can never switch back to it.  Every window move must go through this
+    clamp.
+    """
+    rect = _monitor_rect(hwnd)
+    if rect is None:
+        return x, y
+    left, top, right, bottom = rect
+    if w <= 0:
+        w = 1
+    if h <= 0:
+        h = 1
+    # 窗口比屏幕大时（超广显示器）不能归回一个越界的位置，就停在屏幕左上角。
+    # A window larger than the screen is clamped to the top-left corner
+    # instead of an out-of-range position.
+    nx = min(max(x, left), max(left, right - w))
+    ny = min(max(y, top), max(top, bottom - h))
+    return nx, ny
+
+
+def move_window_at(hwnd: int, x: int, y: int) -> tuple[int, int] | None:
+    """
+    移动窗口并返回**实际落点** / Move a window, returning where it landed.
+
+    实际落点可能不是请求的 (x, y) —— 见 `clamp_to_desktop()`。调用方**必须**
+    用返回值更新自己的坐标记录，否则引擎会以为窗口在别处（而它实际在这里），
+    下一帧的位移就会累积成巨大的跳跃。
+
+    The landing point may differ from the requested one (see
+    `clamp_to_desktop()`).  Callers **must** update their own coordinates from
+    the return value, or the engine will believe the window is elsewhere and
+    the next frame's delta will accumulate into a huge jump.
+    """
+    w = h = 0
+    r = _rect_of(hwnd)
+    if r is not None:
+        w = r[2] - r[0]
+        h = r[3] - r[1]
+    nx, ny = clamp_to_desktop(hwnd, x, y, w, h)
+    try:
+        ok = bool(_user32.SetWindowPos(hwnd, 0, _p(nx), _p(ny), 0, 0,
+                                       SWP_NOSIZE | SWP_NOZORDER
+                                       | SWP_NOACTIVATE))
     except OSError:
-        return False
+        return None
+    if not ok:
+        return None
+    return nx, ny
+
+
+def move_window(hwnd: int, x: int, y: int) -> bool:
+    """
+    只移动、不改变尺寸和 Z 序 / Move a window without resizing or restacking it.
+
+    ⭐ 会先夹到当前桌屏内（虚拟桌面安全），见 `clamp_to_desktop()`。
+    -> Clamped into the current desktop first; see `clamp_to_desktop()`.
+    """
+    return move_window_at(hwnd, x, y) is not None
 
 
 def is_zoomed(hwnd: int) -> bool:

@@ -1326,32 +1326,50 @@ def main() -> int:
                 # unpack only ran when an activeIE window happened to exist.
                 wa4 = m4.shared_env.work_area
                 off_x, off_y = wa4.right + 500, wa4.top + 200
-                moved = win32.move_window(a4.hwnd, off_x, off_y)
-                if moved:
+                # ⭐⭐⭐ **这里曾经把用户真实的窗口搬到屏幕外** ——
+                # 而 Windows 的虚拟桌面（Virtual Desktop）是按**全局坐标**分区的：
+                # 桌面 1 占主显示器的坐标区域（单显示器就是 0,0-1920,1080），桌面 2
+                # 就在它右侧或下方的**另一块坐标区域**。把窗口移到当前桌面范围之外的
+                # 坐标，Windows 会把它**自动移到那个坐标所在的虚拟桌面** —— 用户就再也
+                # 切不回那扇窗口了，只能关掉软件重开。
+                #
+                # 现在**只改引擎里的坐标记录**（假装它被扔出去了），并拦截
+                # `win32.move_window_at` 让**真实窗口完全不被移动**。被测逻辑
+                # （`_reclaim_window` 发现窗口不在工作区 -> 调 move_window 把它夹回来）
+                # 一步不少，断言与顺序也一模一样。
+                #
+                # Only the engine's coordinates are faked; the real window is never moved.
+                # Moving it off-screen would relocate it to another virtual desktop, where
+                # the user could never reach it again.
+                _real_move_at = win32.move_window_at
+                win32.move_window_at = lambda h, x, y: (x, y)
+                try:
                     m4.shared_env.sync_window(a4.hwnd, off_x, off_y,
                                               off_x + a4.width, off_y + a4.height)
-                if a4.left > wa4.right:
-                    check(True, "测试前置：窗口已被搬到工作区外",
-                          f"left={a4.left:.0f} right={wa4.right}")
-                    act._reclaim_window()
-                    wa = m4.shared_env.work_area
-                    inside = (a4.left >= wa.left and a4.top >= wa.top
-                              and a4.right <= wa.right and a4.bottom <= wa.bottom)
-                    check(inside, "扔出工作区的窗口被夹回可见区域",
-                          f"-> left={a4.left:.0f} top={a4.top:.0f}")
-                    # 已经在工作区内的不能被乱动
-                    keep = (a4.left, a4.top)
-                    act._reclaim_window()
-                    check((a4.left, a4.top) == keep,
-                          "已经在工作区内的窗口不会被移动（尊重用户摆放）")
-                else:
-                    # 有些窗口不允许程序搬动（提权的进程等）—— 这不是产品
-                    # bug，跳过而不是误报。
-                    # Some windows refuse programmatic moves (elevated etc.);
-                    # that is not a product bug, so skip rather than fail.
-                    check(True, "本窗口不可被测试搬动，跳过夹回断言"
-                          "（不误报）",
+                    if a4.left > wa4.right:
+                        check(True, "测试前置：窗口已被搬到工作区外",
+                              f"left={a4.left:.0f} right={wa4.right}")
+                        act._reclaim_window()
+                        wa = m4.shared_env.work_area
+                        inside = (a4.left >= wa.left and a4.top >= wa.top
+                                  and a4.right <= wa.right and a4.bottom <= wa.bottom)
+                        check(inside, "扔出工作区的窗口被夹回可见区域",
+                              f"-> left={a4.left:.0f} top={a4.top:.0f}")
+                        # 已经在工作区内的不能被乱动
+                        keep = (a4.left, a4.top)
+                        act._reclaim_window()
+                        check((a4.left, a4.top) == keep,
+                              "已经在工作区内的窗口不会被移动（尊重用户摆放）")
+                    else:
+                        # 有些窗口不允许程序搬动（提权的进程等）—— 这不是产品
+                        # bug，跳过而不是误报。
+                        # Some windows refuse programmatic moves (elevated etc.);
+                        # that is not a product bug, so skip rather than fail.
+                        check(True, "本窗口不可被测试搬动，跳过夹回断言（不误报）",
                           f"left={a4.left:.0f}")
+                finally:
+                    win32.move_window_at = _real_move_at
+
         m4.quit()
 
         # ---- C. 面板不被固定在右下角 ----

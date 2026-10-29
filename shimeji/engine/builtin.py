@@ -534,8 +534,15 @@ class _IEFollowMixin:
         if win32.is_zoomed(a.hwnd):
             return
         nl, nt = a.left + dx, a.top + dy
-        if win32.move_window(a.hwnd, nl, nt):
-            env.sync_window(a.hwnd, nl, nt, nl + a.width, nt + a.height)
+        # ★ 用 `move_window_at()` 拿**实际落点**：移动会被夹到当前屏幕内（虚拟桌面安全），落点可能不是请求的位置。若还按请求的
+        # 坐标记录，引擎会认为窗口在别处 -> 下一帧位移累积成巨大跳跃。
+        # Use the actual landing point: the move is clamped into the current
+        # desktop, so it may differ from the requested one.
+        landed = win32.move_window_at(a.hwnd, nl, nt)
+        if landed is not None:
+            env.sync_window(
+                landed[0], landed[1],
+                landed[0] + a.width, landed[1] + a.height)
 
 
 @_register("WalkWithIE")
@@ -610,8 +617,15 @@ class ThrowIE(_Animated):
             elif not win32.is_zoomed(a.hwnd):
                 self.vy += self.gravity
                 nl, nt = a.left + self.vx, a.top + self.vy
-                if win32.move_window(a.hwnd, nl, nt):
-                    env.sync_window(a.hwnd, nl, nt, nl + a.width, nt + a.height)
+                # ★ 用 `move_window_at()` 拿**实际落点**：移动会被夹到当前屏幕内（虚拟桌面安全），落点可能不是请求的位置。若还按请求的
+                # 坐标记录，引擎会认为窗口在别处 -> 下一帧位移累积成巨大跳跃。
+                # Use the actual landing point: the move is clamped into the current
+                # desktop, so it may differ from the requested one.
+                landed = win32.move_window_at(a.hwnd, nl, nt)
+                if landed is not None:
+                    env.sync_window(
+                        landed[0], landed[1],
+                        landed[0] + a.width, landed[1] + a.height)
         running = self.advance_frame(loop=False)
         # 投掷结束（或窗口已经消失）时，把飞出工作区的窗口夹回来。
         #
@@ -665,5 +679,12 @@ class ThrowIE(_Animated):
         nt = min(max(a.top, top), max(top, bottom - a.height))
         if (nl, nt) == (a.left, a.top):
             return
-        if win32.move_window(hwnd, nl, nt):
-            env.sync_window(hwnd, nl, nt, nl + a.width, nt + a.height)
+        # ★ 用 `move_window_at()` 拿**实际落点**：移动会被夹到当前屏幕内（虚拟桌面安全），落点可能不是请求的位置。若还按请求的
+        # 坐标记录，引擎会认为窗口在别处 -> 下一帧位移累积成巨大跳跃。
+        # Use the actual landing point: the move is clamped into the current
+        # desktop, so it may differ from the requested one.
+        landed = win32.move_window_at(hwnd, nl, nt)
+        if landed is not None:
+            env.sync_window(
+                landed[0], landed[1],
+                landed[0] + a.width, landed[1] + a.height)

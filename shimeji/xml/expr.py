@@ -21,11 +21,44 @@ those expressions into Python and evaluates them.
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 import re
 
 __all__ = ["Expr", "Val", "ExprError"]
+
+log = logging.getLogger(__name__)
+
+#: 已经告警过的「条件求值失败」，避免每帧刷屏。
+#: 键是 (表达式原文, 异常类型名) —— 同一个表达式反复失败只报一次。
+#: ⚠️ **去重是必须的**：行为选择与动画选择每帧都跑，一个坏掉的自定义条件
+#: 会每帧失败一次，不去重的话日志会被同一个错误刷爆，真正的错误反而看不见。
+#: 但也不能完全静音 —— 那正是「无声功能」的来源（项目里 `_reclaim_window`
+#: 的 TypeError 被吞了 7 个版本才发现）。
+#: Already-warned failures, so a broken condition does not flood the log.
+#: Deduplication is necessary (selection runs every frame), but staying silent
+#: is not an option: that is how features die unnoticed.
+_WARNED_FAILURES: set[tuple[str, str]] = set()
+
+
+def warn_eval_failure(raw: str, exc: BaseException) -> None:
+    """
+    表达式求值失败时告警一次（同一个表达式只报一次）。
+
+    调用方的语义都是「跳过这一条，不让整个程序崩」—— 那是**对的**降级方式；
+    但必须留下痕迹，否则用户会以为「配了没生效」而日志里一片空白。
+
+    Warn once per broken expression.  Callers skip the broken entry rather
+    than crashing, which is the right degradation — but they must leave a
+    trace, or the user sees "I configured it and nothing happened".
+    """
+    key = (str(raw)[:200], type(exc).__name__)
+    if key in _WARNED_FAILURES:
+        return
+    _WARNED_FAILURES.add(key)
+    log.warning("表达式求值失败，已跳过：%r（%s）",
+                str(raw)[:200], type(exc).__name__, exc_info=exc)
 
 
 class ExprError(Exception):

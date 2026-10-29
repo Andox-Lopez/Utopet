@@ -12,6 +12,7 @@ which need an engine restart.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
@@ -40,6 +41,8 @@ from ..settings import CHARACTERS_DIR
 from .action_editor import ActionEditor
 
 __all__ = ["SettingsWindow"]
+
+log = logging.getLogger(__name__)
 
 
 class SettingsWindow(QWidget):
@@ -1106,6 +1109,11 @@ class SettingsWindow(QWidget):
                                     self.t.t("lbl.pomo_stats_total"),
                                     stats.total_text())
         except Exception:  # noqa: BLE001
+            # 统计读不出来 -> 标签留空。用户看到的是「番茄钟统计永远是空的」，
+            # 而界面上没有任何提示说「出错了」—— 必须是 warning 而不是静默。
+            # The stats label simply stays empty, so the user sees a
+            # permanently blank figure with no sign of trouble.
+            log.warning("读取番茄钟统计失败", exc_info=True)
             return
         self.stats_label.setText(text)
 
@@ -1293,7 +1301,10 @@ class SettingsWindow(QWidget):
             try:
                 os.startfile(path)  # noqa: S606 - Windows-only convenience
             except Exception:
-                pass
+                # 用户点了「打开」却毫无反应 —— 静默的话他只会以为按钮坏了。
+                # The user clicked "open" and nothing happened; staying silent
+                # makes the button look broken.
+                log.warning("打开自定义配置失败：%s", path, exc_info=True)
 
     # ------------------------------------------------------------------
     # 关于 / about
@@ -1440,6 +1451,10 @@ class SettingsWindow(QWidget):
         try:
             startup_ok = self.manager.set_startup(want_startup)
         except Exception:  # noqa: BLE001 - 注册表写失败不该中断整个「应用」
+            # 界面会弹窗提示用户（见下面），但日志也要留 —— 用户截图里只有
+            # 弹窗，没有日志就查不到根因。
+            # The UI warns the user, but the log keeps the root cause.
+            log.warning("设置开机自启失败", exc_info=True)
             startup_ok = False
         # 只在「刚被勾上、却没写进注册表」时提醒。每次都提醒的话，用户一旦
         # 遇到策略限制，每点一次应用就弹一次，很快就学会无视弹窗了。

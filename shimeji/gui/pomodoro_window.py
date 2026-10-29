@@ -18,6 +18,8 @@ running" would be mutually exclusive.  The tray menu brings it back.
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCursor, QFont
 from PySide6.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel,
@@ -50,6 +52,9 @@ def _fmt(seconds: float) -> str:
     """秒 → mm:ss / seconds -> mm:ss."""
     s = max(0, int(round(seconds)))
     return "%02d:%02d" % (s // 60, s % 60)
+
+
+log = logging.getLogger(__name__)
 
 
 class PomodoroWindow(QWidget):
@@ -409,6 +414,11 @@ class PomodoroWindow(QWidget):
             today = stats.today_text()
             streak = stats.streak()
         except Exception:  # noqa: BLE001 - 统计出问题不该让窗口变空白
+            # 标签清空是对的（不能显示半截数据），但要留痕：用户看到的是
+            # 「统计永远是空的」，而窗口本身没有任何提示。
+            # Clearing the label is right (never show half a figure), but
+            # leave a trace: the user just sees a permanently empty field.
+            log.warning("读取番茄钟统计失败", exc_info=True)
             self.stats_label.setText("")
             return
         t = self.t

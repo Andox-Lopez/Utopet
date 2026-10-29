@@ -262,6 +262,12 @@ class Manager(QObject):
                 win32.set_dpi_scale(screen.devicePixelRatio())
                 log.info("DPI scale = %s", screen.devicePixelRatio())
         except Exception:
+            # 退化到 1.0（不认得缩放 = 按 100% 画），但**必须留下日志**。
+            # 静默退化的代价是：用户在高缩放屏上看到「宠物位置不对」，
+            # 而日志里一个字都没有 —— 排查时完全无从下手。
+            # Fall back to 1.0, but leave a trail: a silent fallback leaves
+            # the user staring at a misplaced pet with nothing in the log.
+            log.exception("读取 DPI 失败，退回 1.0（高缩放屏上宠物可能错位）")
             win32.set_dpi_scale(1.0)
 
         self.timer = QTimer(self)
@@ -451,9 +457,20 @@ class Manager(QObject):
         path = self.settings.custom_xml
         if not os.path.exists(path):
             return
+        # ⚠️ 解析失败**不能静默**：用户的自定义动作会**整批消失**，程序照常
+        # 启动，界面一切正常 —— 用户只会觉得「我配的动作不生效」，而日志里
+        # 一个字都没有。这正是项目笔记里那条教训的典型样本
+        # （`_reclaim_window` 的 TypeError 被吞了 7 个版本）。
+        # 保留「跳过坏文件、继续启动」的容错，但必须**大声记下来**，
+        # 并且把文件路径写进日志 —— 用户报「自定义动作不见了」时，
+        # 管理员第一句要问的就是「日志里有没有 custom.xml」。
+        # A parse failure must not be silent: the user's custom actions would
+        # vanish while the app starts up perfectly, and the log would say
+        # nothing at all.
         try:
             custom_actions = load_actions(path)
         except Exception:
+            log.exception("读取自定义动作失败，已跳过：%s", path)
             custom_actions = None
         if custom_actions:
             for name, defn in custom_actions.actions.items():
@@ -461,6 +478,7 @@ class Manager(QObject):
         try:
             custom_behavior = load_behavior(path)
         except Exception:
+            log.exception("读取自定义行为失败，已跳过：%s", path)
             custom_behavior = None
         if custom_behavior:
             self.constants.update(custom_behavior.constants)
@@ -488,6 +506,11 @@ class Manager(QObject):
         try:
             return set(load_actions(path).actions.keys())
         except Exception:
+            # 与 `_merge_custom` 同一个理由：解析失败时自定义动作**整批消失**，
+            # 界面却看不出任何异常。
+            # Same reason as _merge_custom: a parse failure makes the custom
+            # actions vanish with no visible sign in the UI.
+            log.exception("读取自定义动作名失败：%s", path)
             return set()
 
     # ------------------------------------------------------------------
@@ -2141,7 +2164,9 @@ class Manager(QObject):
             self.tray.setToolTip("%s — %s" % (t.t("pomo.title"),
                                               _pomodoro_state_text(pom)))
         except Exception:  # noqa: BLE001
-            pass
+            # 托盘提示没更新上，无害（下次刷新会补上），但记一笔。
+            # The tray tooltip did not update; harmless, but note it.
+            log.debug("更新托盘提示失败", exc_info=True)
 
     def _pomodoro_pet_react(self):
         """

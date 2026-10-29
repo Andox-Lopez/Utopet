@@ -30,6 +30,7 @@ import logging
 import math
 
 from ..xml.config import ActionDef, ActionRef
+from ..xml.expr import warn_eval_failure
 from .environment import NOT_ON_BORDER, Pt
 
 __all__ = ["ActionInstance", "create_action",
@@ -332,7 +333,12 @@ class AnimateInstance(ActionInstance):
             try:
                 if a.condition.eval(ns):
                     return a
-            except Exception:
+            except Exception as exc:
+                # 这段动画的条件坏了 -> 跳过它，继续试下一段（降级正确）。
+                # 但要留痕：否则「这段动画永远播不出来」这件事完全不可见。
+                # Skip this animation, but leave a trace: otherwise "this
+                # animation never plays" is completely invisible.
+                warn_eval_failure(getattr(a.condition, "raw", a.condition), exc)
                 continue
         return anims[0]
 
@@ -618,7 +624,10 @@ class SelectInstance(ActionInstance):
                     if cond.eval(ns):
                         chosen = item
                         break
-                except Exception:
+                except Exception as exc:
+                    # 条件坏了 -> 跳过这个分支（降级正确），但留痕。
+                    # Skip the branch, but leave a trace.
+                    warn_eval_failure(getattr(cond, "raw", cond), exc)
                     continue
             if chosen is None:
                 chosen = fallback if fallback is not None else (

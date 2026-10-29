@@ -29,6 +29,8 @@ and made "how many windows does this app own?" harder to reason about.
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QProgressBar, QPushButton, QSpinBox,
@@ -39,6 +41,8 @@ from ..icons import app_icon, logo_pixmap
 from ..i18n import get_i18n
 
 __all__ = ["TaskbarPanel"]
+
+log = logging.getLogger(__name__)
 
 
 class TaskbarPanel(QWidget):
@@ -386,6 +390,10 @@ class TaskbarPanel(QWidget):
         try:
             left, top, right, bottom = win32.get_work_area()
         except Exception:
+            # 拿不到工作区 -> 这一帧不做贴边。降级是对的，但要留痕：
+            # 否则「面板贴不到边上」这种问题无从查起。
+            # No work area: skip the edge-snapping this frame.
+            log.debug("读工作区失败，本帧不做贴边", exc_info=True)
             return
         self.adjustSize()
         w, h = self.width(), self.height()
@@ -398,7 +406,12 @@ class TaskbarPanel(QWidget):
                 w = max(w, r[2] - r[0])
                 h = max(h, r[3] - r[1])
         except Exception:
-            pass
+            # 拿不到含边框的尺寸 -> 用 Qt 的客户区尺寸。位置会有偏差但不影响
+            # 使用，所以只记 debug（这类调用每帧都可能失败，不该刷屏）。
+            # No frame size: fall back to the client area.  Position may be
+            # off by the border width, but the panel still works, so this is
+            # debug-level (it can fail on every frame).
+            log.debug("读窗口含边框尺寸失败，用客户区尺寸", exc_info=True)
         # 1.0.5 的原版实现（1.1.0 把它抽成了 _remembered_pos，
         # 随界面重做一并回退，这里把内联逻辑写回来）：
         # 记得用户上次把面板拖到哪儿，没有记录才落到右下角。
@@ -445,10 +458,12 @@ class TaskbarPanel(QWidget):
         try:
             left, top, right, bottom = win32.get_work_area()
         except Exception:
+            log.debug("读工作区失败，本帧不做夹取", exc_info=True)
             return
         try:
             r = win32.window_rect(int(self.winId()))
         except Exception:
+            log.debug("读窗口矩形失败，本帧不做夹取", exc_info=True)
             return
         if not r:
             return
@@ -483,7 +498,14 @@ class TaskbarPanel(QWidget):
         try:
             win32.make_taskbar_window(int(self.winId()))
         except Exception:
-            pass
+            # ⚠️ 这处**用 warning 而不是 debug**：失败意味着**任务栏上没有按钮**，
+            # 宠物就「藏起来」了 —— 用户看不到它、找不到它，但界面上也看不出
+            # 任何异常。这类「用户可见的功能消失」必须留下记录。
+            # This one is a warning, not debug: failing here means there is
+            # no taskbar button, so the pet is effectively hidden — the user
+            # cannot find it and the UI shows no sign of trouble.
+            log.warning("设置任务栏窗口样式失败，任务栏上可能没有按钮",
+                        exc_info=True)
         self._place()
         # 显示后字体与换行才最终生效，高度会变，所以再夹一次
         # Fonts and word wrap only settle after show(), so clamp once more.
@@ -523,4 +545,7 @@ class TaskbarPanel(QWidget):
         try:
             self.manager.settings.set("panel_pos", [int(self.x()), int(self.y())])
         except Exception:
-            pass
+            # 位置没存住 -> 下次启动面板回到右下角。降级可以接受，但要留痕。
+            # The position was not saved, so the panel returns to the corner
+            # next launch.  Acceptable, but leave a trace.
+            log.debug("保存面板位置失败", exc_info=True)

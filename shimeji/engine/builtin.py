@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 
 from .. import win32
+from ..xml.expr import warn_eval_failure
 from .environment import NOT_ON_BORDER, Pt
 from .runtime import ActionInstance, AnimateInstance, InstantInstance
 
@@ -64,7 +65,11 @@ class _Animated(ActionInstance):
             try:
                 if a.condition.eval(ns):
                     return a
-            except Exception:
+            except Exception as exc:
+                # 与 runtime.py 的 _pick_animation 同一件事：条件坏了就跳过
+                # 这段动画（降级正确），但要留痕。
+                # Same as runtime's _pick_animation: skip, but leave a trace.
+                warn_eval_failure(getattr(a.condition, "raw", a.condition), exc)
                 continue
         return anims[0]
 

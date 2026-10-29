@@ -13,11 +13,15 @@ Picks a behaviour by weighted random on `頻度`, honouring `次の行動リス�
 
 from __future__ import annotations
 
+import logging
 import random
 
 from ..xml.config import BehaviorDef, BehaviorSet
+from ..xml.expr import warn_eval_failure
 
 __all__ = ["Brain"]
+
+log = logging.getLogger(__name__)
 
 #: 找不到任何可用行为时的兜底行为名（按顺序尝试）
 # Fallback behaviour names, tried in order, when nothing else is available.
@@ -137,7 +141,11 @@ class Brain:
                 try:
                     if not self._true(cond.eval(ns)):
                         continue
-                except Exception:
+                except Exception as exc:
+                    # 跳过这条行为（不崩），但要留下痕迹：条件坏了的行为
+                    # 永远不会被选中，用户只会觉得「配了没生效」。
+                    # Skip the behaviour (do not crash), but leave a trace.
+                    warn_eval_failure(getattr(cond, "raw", cond), exc)
                     continue
             freq = self._weight(b.name, b.frequency.num(ns, 0), mascot)
             if freq is None or freq <= 0:
@@ -168,7 +176,9 @@ class Brain:
                 try:
                     if not self._true(ref.condition.eval(ns)):
                         continue
-                except Exception:
+                except Exception as exc:
+                    warn_eval_failure(getattr(ref.condition, "raw",
+                                                   ref.condition), exc)
                     continue
             freq = self._weight(ref.name, ref.frequency.num(ns, 0), mascot)
             if freq is None or freq <= 0:

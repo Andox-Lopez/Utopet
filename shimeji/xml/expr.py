@@ -78,8 +78,85 @@ _GLOBALS = {
 }
 
 
+def _split_brackets(s: str) -> str:
+    """
+    递归翻译**括号内**的内容 / Recursively translate what is inside brackets.
+
+    ⭐ **为什么需要这一步**（2026-10-29 修的真 bug）：`_convert_ternary` 只在
+    `depth == 0` 的位置找 `?`，而括号会让 depth 变深 —— 于是
+    `( a ? b : c )` 这种**整个三元被括号包住**的写法，里面的 `?` 永远
+    找不到，翻译结果里还留着 `?`，Python 语法错误 -> 表达式编译失败 ->
+    **这条行为永远不会被选中，而且完全静默**。
+
+    真实受害者：原版 `Behavior.xml` 里「壁から落ちる」（从墙上落下）那条
+    行为，它的条件就是
+    `( mascot.lookRight ? (...) : (...) ) and (!floor.isOn(anchor))` ——
+    **Ayaka / Miku / 花卷 三个角色包全都中招**（共用同一份原版配置）。
+
+    先把括号内的内容递归翻译掉，外层的 `?` 就露出来了。
+
+    顺带处理**字符串字面量**：`"a(b)"` 里的括号不是分组，不能动。
+
+    Translate what is inside brackets first, so that a ternary wrapped in
+    parentheses is not mistaken for an inner-level `?`.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch in "\"'":
+            # 字符串字面量：原样复制到结束（`\\` 是转义）
+            j = i + 1
+            while j < n:
+                if s[j] == "\\":
+                    j += 2
+                    continue
+                if s[j] == ch:
+                    j += 1
+                    break
+                j += 1
+            out.append(s[i:j])
+            i = j
+            continue
+        if ch in "([{":
+            close = {"(": ")", "[": "]", "{": "}"}[ch]
+            depth = 1
+            j = i + 1
+            while j < n and depth:
+                c = s[j]
+                if c in "\"'":
+                    k = j + 1
+                    while k < n:
+                        if s[k] == "\\":
+                            k += 2
+                            continue
+                        if s[k] == c:
+                            k += 1
+                            break
+                        k += 1
+                    j = k
+                    continue
+                if c in "([{":
+                    depth += 1
+                elif c in ")]}":
+                    depth -= 1
+                j += 1
+            inner = s[i + 1:j - 1]
+            out.append(ch + _convert_ternary(inner) + close)
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _convert_ternary(s: str) -> str:
     """把 `a ? b : c` 转成 Python 条件表达式 / Convert `a ? b : c` to a Python conditional."""
+    # ⭐ 先把括号内的内容递归翻译 —— 否则 `( a ? b : c )` 这种写法里的 `?`
+    # 找不到（depth 一直 > 0），整条表达式编译失败且**完全静默**。
+    # 见 `_split_brackets()` 的说明（真实受害者：原版「壁から落ちる」行为）。
+    s = _split_brackets(s)
     depth = 0
     i = 0
     while i < len(s):
@@ -124,8 +201,15 @@ def _to_python(src: str) -> str:
     s = re.sub(r"[\r\n\t]+", " ", src).strip()
     s = _convert_ternary(s)
     s = s.replace("&&", " and ").replace("||", " or ")
-    # `!` 取反（不破坏 `!=`）/ logical NOT, keeping `!=` intact
-    s = re.sub(r"!(?!=)", " not ", s)
+    # `!` 取反（不破坏 `!=`）
+    #
+    # ⚠️ **替换成 `not ` 而不是 ` not `**（2026-10-29 修的真 bug）：
+    # 旧写法在 `!` **前面**插空格，于是**任何以 `!` 开头的表达式**翻译后
+    # 都以空格开头 —— Python 的 eval 模式不接受前导空格，直接报
+    # "unexpected indent" -> 编译失败 -> **这条行为永远不会被选中**。
+    # 真实配置里有 9 处这种写法（`!mascot.environment.floor.isOn(...)` 等）。
+    # `not ` 带尾随空格，`!x` -> `not x`、`!(a && b)` -> `not (a && b)` 都对。
+    s = re.sub(r"!(?!=)", "not ", s)
     s = re.sub(r"\bMath\.random\s*\(\s*\)", "_rnd()", s)
     s = re.sub(r"\bMath\.(abs|min|max|round)\s*\(", r"\1(", s)
     s = re.sub(r"\bMath\.floor\s*\(", "_math.floor(", s)
@@ -135,7 +219,11 @@ def _to_python(src: str) -> str:
     s = re.sub(r"\btrue\b", "True", s)
     s = re.sub(r"\bfalse\b", "False", s)
     s = re.sub(r"\bnull\b", "None", s)
-    return s
+    # ⭐ 最后再 strip 一次：Python 的 eval 模式**不接受前导空格**
+    # （会报 "unexpected indent"），而翻译过程里任何一处替换都可能
+    # 在开头留下空格。Strip at the very end: eval-mode code must not
+    # start with whitespace.
+    return s.strip()
 
 
 class Expr:

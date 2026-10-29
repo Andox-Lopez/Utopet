@@ -75,6 +75,50 @@ def find_iscc() -> str:
     return r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
 
+def find_gh() -> str:
+    """找到 GitHub CLI。/ Locate the GitHub CLI.
+
+    ⭐ **为什么不能直接用 `gh`**：GitHub CLI 装在
+    `C:/Program Files/GitHub CLI/gh.exe`，**默认不在 PATH 里**。Windows 的
+    「Add to PATH」选项默认不勾，而装完 CLI 的人很少手动去勾。
+
+    所以直接跑 `gh` 的后果是「看运气」：有时 PATH 里有（同一个安装程序在
+    某些版本里会问要不要加），有时没有。发 1.1.2 时 PATH 里恰好有，
+    发 1.1.2-beta.2 时就没有 —— 同一个人、同一个脚本，行为却不一样，
+    排查起来极其费劲。
+
+    查找顺序：
+    1. 环境变量 `GH`（完整 exe 路径）
+    2. 环境变量 `GITHUB_CLI`（同上）
+    3. 常见安装位置（Program Files / Program Files (x86)）
+    4. PATH 里的 `gh`（交回裸名字，让系统去找）
+
+    与 `find_iscc()` 一致：**显式指定的路径即使不存在也直接返回**，
+    不静默回退 —— 用户特意设了 `GH` 却发现脚本跑去用别的，那永远搞不清
+    自己哪里配错了。
+
+    The GitHub CLI is not on PATH by default on Windows, so calling `gh`
+    directly makes the release script work "by luck".  Look for an explicit
+    override first, then the usual install locations, then fall back to PATH.
+    """
+    for var in ("GH", "GITHUB_CLI"):
+        p = os.environ.get(var)
+        if p:
+            return p
+    for c in (r"C:\Program Files\GitHub CLI\gh.exe",
+              r"C:\Program Files (x86)\GitHub CLI\gh.exe",
+              os.path.expandvars(r"%LOCALAPPDATA%\Programs\GitHub CLI\gh.exe")):
+        if os.path.exists(c):
+            return c
+    # 都不在：交回裸名字，交给系统按 PATH 找（找不到会在调用处报错）
+    return "gh"
+
+
+def gh_cmd(*args: str) -> list[str]:
+    """拼一条 gh 命令。/ Build a gh command line."""
+    return [find_gh()] + list(args)
+
+
 def iss_path() -> str:
     """`.iss` 的路径。/ Path to the installer script.
 
@@ -340,12 +384,22 @@ def preflight(dry: bool) -> str:
         raise Abort("版本号在三处对不上，先改一致再打包。"
                     "装出来的版本和用户看到的不一样是最难查的一类问题。")
 
-    if not have("gh"):
-        fail("找不到 gh（GitHub CLI）")
+    # ⚠️ 用 `find_gh()` 而不是裸 "gh"：GitHub CLI 默认**不在 PATH** 里
+    # （安装时那个「Add to PATH」默认不勾）。直接跑 `gh` 的后果是「看运气」——
+    # 有时能跑、有时不能，同一个人同一脚本行为却不一样。
+    # Use find_gh() rather than a bare "gh": the CLI is not on PATH by default.
+    _gh = find_gh()
+    if not have(_gh):
+        fail("找不到 gh（GitHub CLI）：%s" % _gh)
         raise Abort("Release 那一步需要 gh。先装：winget install GitHub.cli")
-    rc, out = capture(["gh", "auth", "status"], timeout=60)
-    ok("gh 已登录" if rc == 0 else "gh 登录状态异常：%s" % out[:200])
-    if rc != 0:
+    rc, out = capture(gh_cmd("auth", "status"), timeout=60)
+    # ⚠️ 别用 `ok()` 打印「异常」—— `ok()` 是**无条件**加 `[ok]` 前缀的，
+    # 拿它报失败会让人以为自检通过了。异常要走 `fail()`。
+    # Do not print a failure through ok(): it always tags the line "[ok]".
+    if rc == 0:
+        ok("gh 已登录")
+    else:
+        fail("gh 登录状态异常", out[:200].replace("\n", " "))
         raise Abort("gh 没登录，先跑 gh auth login")
 
     rc, url = git_capture("remote", "get-url", REMOTE)
@@ -508,14 +562,25 @@ def publish(version: str, setup_path_: str, dry: bool, assume_yes: bool,
         if dry:
             say("  --dry-run：跳过提交")
         else:
-            # ⚠️ `git add -A` **不会**加进被 .gitignore 忽略的文件，而
-            # `.gitignore` 里有 `analysis/*` —— analysis\ 整个目录被忽略，
-            # 里面已有的测试脚本是历史遗留才在版本控制里的。**新写的测试脚本
-            # 不会被这次提交带上**，需要手动 `git add -f analysis/xxx.py`。
-            # 这里明确提醒，因为「测试没提交」是最容易漏掉又最难发现的坑。
-            # `git add -A` skips ignored files and `.gitignore` ignores
-            # `analysis/*`; the existing scripts are in the index only by
-            # history.  A newly written test script will NOT be committed.
+            # 检查「有没有测试脚本被 .gitignore 挡在这次提交之外」。
+            #
+            # ⚠️ 2026-10-29 更正：这里的原注释说「`.gitignore` 里有 `analysis/*`，
+            # 整个 analysis 目录被忽略」—— **这是错的**。`.gitignore` 里并没有
+            # `analysis/*` 这条规则，只有 `analysis/_*` 和几个截图产物
+            # （`analysis/appearance_*.png` 等）。实测：新写的 `analysis/verify_x.py`
+            # 用普通 `git add` 就能入库，42 个测试脚本一直都在版本控制里。
+            #
+            # **检查本身要留着** —— 规则随时可能变，而且「测试没提交」是最容易漏
+            # 掉又最难发现的坑：提交里少了测试，回归就再也跑不到那些断言。
+            # 只是别再把原因说成「整个目录被忽略」。
+            #
+            # Check whether any test script is excluded from this commit by
+            # .gitignore.  The original comment claimed `analysis/*` was
+            # ignored — that was wrong: only `analysis/_*` and a few
+            # screenshots are, and new test scripts have always been
+            # committable with a plain `git add`.  The check stays, because
+            # "the test never got committed" is the most easily missed and
+            # hardest-to-notice kind of mistake.
             rc = git("add", "-A", timeout=120)
             if rc != 0:
                 raise Abort("git add 失败")
@@ -525,7 +590,7 @@ def publish(version: str, setup_path_: str, dry: bool, assume_yes: bool,
             new_ignored = [l for l in out.splitlines()
                            if l.strip().endswith(".py")]
             if new_ignored:
-                warn("analysis\\ 下有 %d 个文件被 .gitignore 排除，"
+                warn("analysis\\ 下有 %d 个 .py 文件被 .gitignore 排除，"
                      "这次提交**不含**它们（如需入库：git add -f）："
                      % len(new_ignored))
                 for f in new_ignored[:6]:
@@ -545,7 +610,7 @@ def publish(version: str, setup_path_: str, dry: bool, assume_yes: bool,
     # 留下一个"代码推了但没发版"的半成品状态。所以提前查、提前说清楚。
     rel_exists = False
     if not dry:
-        rc2, _ = capture(["gh", "release", "view", tag, "--repo", repo],
+        rc2, _ = capture(gh_cmd("release", "view", tag, "--repo", repo),
                          timeout=120)
         rel_exists = (rc2 == 0)
         if rel_exists:
@@ -623,10 +688,10 @@ def publish(version: str, setup_path_: str, dry: bool, assume_yes: bool,
     try:
         repo = _gh_repo_slug(REMOTE)
         title = "Utopet %s" % version
-        cmd = ["gh", "release", "create", tag,
-               "--repo", repo,
-               "--title", title,
-               "--notes-file", notes_path]
+        cmd = gh_cmd("release", "create", tag,
+                     "--repo", repo,
+                     "--title", title,
+                     "--notes-file", notes_path)
         if prerelease:
             # `--prerelease` 让 GitHub 把它标成测试版：不会成为 "Latest"，
             # 用户默认也看不到，得自己点进 Releases 才找得到。这正是测试版

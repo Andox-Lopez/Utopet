@@ -287,6 +287,50 @@ _out2 = _buf2.getvalue()
 check("v%s" % VER in _out2 and "beta" not in _out2,
       "正式版 dry-run 仍然只显示 v<版本>（没有被预发布逻辑污染）")
 
+# ── ⑥ gh 的自动定位 ─────────────────────────────────────────────
+# GitHub CLI 装在「C:/Program Files/GitHub CLI/gh.exe」，**默认不在 PATH 里**
+# （安装时那个「Add to PATH」默认不勾）。直接跑 `gh` 的后果是「看运气」：
+# 有时 PATH 里有、有时没有，同一个人同一脚本行为却不一样。
+section("gh 自动定位")
+import os as _os
+_saved_gh = _os.environ.pop("GH", None)
+_saved_cli = _os.environ.pop("GITHUB_CLI", None)
+try:
+    _p = rel.find_gh()
+    check(bool(_p), "find_gh() 总能返回一个候选路径", repr(_p))
+    # 标准安装位置应该能被找到（CI/别的机器上靠 PATH 兜底）
+    _known = (r"C:\Program Files\GitHub CLI\gh.exe",
+              r"C:\Program Files (x86)\GitHub CLI\gh.exe")
+    _hit = [k for k in _known if _os.path.exists(k)]
+    if _hit:
+        check(_p == _hit[0] or _p == "gh",
+              "标准安装位置能被认出来（或退回 PATH 里的 gh）",
+              "find_gh()=%s" % _p)
+    # 环境变量优先
+    _os.environ["GH"] = r"C:\custom\gh.exe"
+    check(rel.find_gh() == r"C:\custom\gh.exe",
+          "环境变量 GH 优先于标准安装位置")
+    _os.environ.pop("GH")
+    _os.environ["GITHUB_CLI"] = r"D:\other\gh.exe"
+    check(rel.find_gh() == r"D:\other\gh.exe",
+          "环境变量 GITHUB_CLI 也认")
+    # 显式指定**即使不存在也照用** —— 不静默回退，用户才知道自己哪里配错了
+    _os.environ["GH"] = r"C:\不存在的路径\gh.exe"
+    check(rel.find_gh() == r"C:\不存在的路径\gh.exe",
+          "显式指定的路径即使不存在也直接返回（不静默回退）")
+finally:
+    _os.environ.pop("GH", None)
+    _os.environ.pop("GITHUB_CLI", None)
+    if _saved_gh is not None:
+        _os.environ["GH"] = _saved_gh
+    if _saved_cli is not None:
+        _os.environ["GITHUB_CLI"] = _saved_cli
+
+# gh_cmd() 必须把可执行文件放在第 0 位
+_c = rel.gh_cmd("release", "create", "v1.2.3")
+check(len(_c) >= 4 and _c[0] == rel.find_gh() and _c[1] == "release",
+      "gh_cmd() 把可执行文件放在第 0 位", " ".join(_c[:3]))
+
 print()
 print("=" * 60)
 if FAILS:

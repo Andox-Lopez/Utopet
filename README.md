@@ -70,7 +70,7 @@ python tools\build_release.py
 | | |
 | --- | --- |
 | **原版 91 个动作** | 走路、奔跑、坐下、趴卧、爬墙、天花板、拖拽、抛投、掉落物理 |
-| **窗口互动** | 站在窗口顶部、攀爬窗口边缘、扛起窗口、扔出窗口（原版 IE 系动作，**只认前台窗口**） |
+| **窗口互动** | 站在窗口顶部、攀爬窗口边缘、扛起窗口、扔出窗口（原版 IE 系动作，**光标所在的窗口**，没被别的窗口完全盖住的那种） |
 | **多宠物** | 一次召唤 2/3/5/10 只，落点自动铺开避免叠成一堆 |
 | **多角色共存** | 多个不同角色同屏，各用各的动作表 |
 | **自我增殖** | 分裂 / 拔萝卜，可在设置里关掉 |
@@ -153,9 +153,10 @@ ISCC 需装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。安装向导的�
 - **「输入回避」避的是「光标附近」，不是「输入框附近」。** Windows 不告诉外部程序
   「你的输入框在哪」：浏览器、VS Code 这类应用自己绘制光标。记事本、Office 这类传统
   控件能提供精确位置，程序会自动切到精确模式。可在 **设置 → 行为** 关掉或调区域大小。
-- **窗口互动只认「当前前台（活动）窗口」。** 光标停在后台窗口上不会把宠物引过去；
-  要让它爬某个窗口，先把这个窗口点到前台。切换窗口时，正在进行的爬窗动作会跟着
-  换到新窗口上（扛、扔的动作则锁定发起时那个窗口，不会中途换）。
+- **窗口互动认的是「光标所在、且没被完全遮盖」的窗口。** 把鼠标移到某个窗口上，
+  宠物就会去爬它；被别的窗口**完全盖住**的窗口不参与互动（用户根本看不见它，
+  宠物在看不见的边上走会变成「凭空位移」）。露出半扇的窗口照常可以互动。
+  扛着 / 扔出窗口的动作会**锁定**发起时的那一扇，全程不换。
 - **最大化 / 全屏窗口不参与窗口互动**（宠物不会去爬、扛、扔它们）。这类窗口的下边和
   屏幕地面完全重合，宠物站在地上会一直触发「沿窗口下边爬行」。
 - **会话恢复对同一个行为精确续播**；存档里的行为在当前角色的动作表里找不到时（换了角色，
@@ -295,7 +296,7 @@ Right-click the panel button to pin it to the taskbar.
 | | |
 | --- | --- |
 | **All 91 original actions** | walk, run, sit, lie, climb walls, ceilings, drag, throw, fall physics |
-| **Window interaction** | stand on window tops, climb edges, carry windows, throw them |
+| **Window interaction** | stand on window tops, climb edges, carry windows, throw them (the window under the cursor, if it is not fully covered) |
 | **Many mascots** | summon 2/3/5/10 at once, landing points spread automatically |
 | **Multi-character** | several different characters on screen at once |
 | **Self-cloning** | split / pull-out, switchable in settings |
@@ -340,7 +341,21 @@ python main.py      :: or double-click 启动桌宠.bat
   Windows does not tell outside programs where the input box is; modern apps
   draw their own caret. Classic Win32 controls (Notepad, Office) do report it.
   Switchable under **Settings → Behaviour**.
+- **Window interaction targets the window under the cursor, as long as it is
+  not fully covered.** Move the pointer onto a window and the pet will climb
+  it; a window completely hidden behind another one takes no part in the
+  interaction (the user cannot see it, and walking along an invisible edge
+  would look like the pet drifting through mid-air). A window that peeks out
+  from behind another one still counts. The carry and throw actions **lock
+  onto** the window they started with and never switch.
 - Maximised / full-screen windows take no part in window interaction.
+- **Session restore resumes the same behaviour exactly.** When the saved
+  behaviour is missing from the current character's action table (different
+  character, or the action was disabled), the position is still restored and
+  the behaviour is picked anew.
+- Frame resume is capped at 20000 frames (about 13 minutes at 25 fps).
+- "Gather when the mouse rests" is off by default; switch it on under
+  **Settings → Behaviour**.
 - Global hotkeys were removed in 1.0.7 (see [CHANGELOG](CHANGELOG.md)).
 
 ### License

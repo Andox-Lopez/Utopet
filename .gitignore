@@ -50,6 +50,13 @@ analysis/panel_zh.png
 install.log
 utopet_setup_debug.log
 
+# ── 外部工具留下的运行期状态 ────────────────────────────────
+# gh (GitHub CLI) 2.x 会写 `.local/state/gh/device-id`（设备标识）。
+# 它是**本机**状态，不该进版本库 —— 而且每次跑 gh 都会变，进库只会制造噪音。
+# The GitHub CLI writes a device id under .local/; it is per-machine state
+# and changes on every run, so it would only add noise to the repository.
+.local/
+
 # ── IDE / 编辑器 ──────────────────────────────────────────
 .vscode/
 .idea/
@@ -73,6 +80,13 @@ $RECYCLE.BIN/
 characters/*
 #非开发内容
 docs/*
+# ⚠️ 但优化路径清单是**开发文档**，要入库。
+# `docs/*` 忽略了整个目录，新文件得 `git add -f` 才带得上 —— 很容易漏，
+# 漏了等于这份清单只存在于某台机器上。
+# The roadmap is a development document and belongs in the repo: `docs/*`
+# ignores the whole directory, so a new file there needs `git add -f`,
+# which is easy to forget.
+!docs/ROADMAP.md
 #发布工具
 tools/release.py
 

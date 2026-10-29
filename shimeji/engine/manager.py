@@ -377,6 +377,11 @@ class Manager(QObject):
         self.images = bundle.images
         self.actions = bundle.actions
         self.behaviors = bundle.behaviors
+        # ⭐ 最后一次下发的「随机跳帧数」（1.0.9 行为失配时用）。
+        # 只给测试读 —— 断言要的是**下发时**的值，不是动作上剩下的量
+        # （那个是竞态：跳帧恰好为 1 时，tick 一次就归零了）。
+        # The last random skip actually issued (1.0.9, on a mismatch).
+        self._last_resume_jitter = 0
         self._register_flee_action(bundle)
         self._merge_custom()
         self.constants = dict(self.behaviors.constants)
@@ -1041,7 +1046,19 @@ class Manager(QObject):
             return m.resume_seek, m.resume_index, 0
         if not m.resume_behavior:
             return 0, 0, 0
-        return 0, 0, random.randint(1, _RESUME_JITTER_FRAMES)
+        jitter = random.randint(1, _RESUME_JITTER_FRAMES)
+        # ⭐ **把「下发时」的值记下来**（2026-10-29 修 flaky 加的接缝）。
+        #
+        # 为什么要记：跳帧数会被动作**消费**（`AnimateInstance.tick()` 每帧
+        # `seek_left -= 1`），所以动作上剩下的 `seek_left` 读出来是**竞态** ——
+        # 随机跳帧恰好是 1 时，tick 一次就变成 0，断言「跳帧 > 0」会失败
+        # （概率 1/12）。记下下发时的值，断言就不用跟消费速度赛跑。
+        #
+        # Record the value **as issued**.  The action consumes it (one
+        # frame per tick), so whatever is left on the action is a race;
+        # the issued value is not.
+        self._last_resume_jitter = jitter
+        return 0, 0, jitter
 
     def _rescue_if_offscreen(self, m: Mascot):
         """

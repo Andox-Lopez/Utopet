@@ -225,9 +225,25 @@ class Brain:
 
         pool = self._next_pool(mascot, ns)
         if pool is None:
+            # 「**没有约束**」-> 用全局池。这是正常路径。
+            # No constraint at all: use the global pool.
             pool = self._global_pool(mascot, ns)
-        if not pool:
-            pool = self._global_pool(mascot, ns)
+        # ⚠️ 「**有约束但一个候选都不满足**」（`_next_pool` 返回 `[]`）时，
+        # **不能**退回全局池 —— 那样 `追加="false"` 就名不副实了：约束说
+        # 「下一个只能从这个列表里选」，列表空了却去选了个完全无关的行为。
+        # 原版语义是「没有可接续的行为就保持原状」，这里落到下面的
+        # **兜底链**（站着发呆 / 站立 / 落下）—— 同样是中性行为，宠物不会卡死。
+        #
+        # ⭐ 真实配置里几乎不触发：6 个 `追加="false"` 的 nextList 每个都带
+        # 无条件候选，池子不会空。但「几乎不触发」不等于「语义正确」——
+        # 一旦有角色包写成全带条件，这里就会选到无关行为。
+        #
+        # Do NOT fall back to the global pool when the constraint produced an
+        # empty list: that would make `追加="false"` meaningless.  Fall
+        # through to the neutral FALLBACKS instead, so the pet never freezes.
+        #
+        # ⭐ 区分两种「空」是这里的关键：`_next_pool` 返回 `None` = 没有约束，
+        # 返回 `[]` = 有约束但不满足。旧代码把两者都当成「用全局池」。
 
         if pool:
             total = sum(w for w, _ in pool)

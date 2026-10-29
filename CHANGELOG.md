@@ -10,6 +10,78 @@
 
 ---
 
+## [1.1.3] — 2026-10-29
+
+**原版「从墙上落下」这个行为从来没生效过，另有 12 处行为条件一直是死的。**
+**The original "fall off the wall" behaviour never worked, and 12 other behaviour conditions were dead too.**
+
+### 🐛 修复 Fixed
+
+- **原版的「壁から落ちる」（从墙上落下）这个行为，从来没有被选中过。**
+  1.1.3 之前，配置里这条行为的条件写成「整个三元运算符被一对括号包住」的
+  样子，而表达式翻译器只在**最外层**找 `?` —— 括号让它躲了起来，翻译结果
+  里还留着 `?`，于是这条表达式**编译失败**，而编译失败是被**静默吞掉**的
+  （`code = None`，日志里一个字都没有）。结果是：宠物站在墙上时**永远不会
+  掉下来**，而你完全看不出哪里出了问题。三个角色包（Ayaka / Miku / 花卷）
+  共用同一份原版配置，所以**全都中招**。
+  **The original "fall off the wall" behaviour was never selected.**  Its
+  condition wraps a ternary in parentheses, which the expression translator
+  could not see; the compile failure was swallowed silently.  The pet could
+  therefore never fall off a wall, and nothing in the log hinted at it.  All
+  three character packs were affected.
+- **还有 9 处以 `!` 开头的条件一直是死的。** 翻译器把 `!` 译成 ` not `
+  （**前面**带空格），于是这类表达式翻译后**以空格开头** —— Python 的求值
+  模式不接受前导空格，直接编译失败。比如「脚下不是地面时才能落下」这条判断
+  从来没有成立过。现在 `!` 译成 `not `（**后面**带空格），并在翻译末尾再
+  统一去一次空白。
+  **Nine conditions starting with `!` were dead as well.**  The translator
+  emitted a leading space, which Python's eval mode rejects.
+- **「次の行動リスト」说「下一个只能从这个列表里选」，现在真的只会从这里选。**
+  以前「有约束但列表里的条件一个都不满足」和「根本没有约束」被当成同一回事，
+  都退回全局候选池 —— 于是约束形同虚设，宠物会接一个完全无关的行为。现在
+  两种「空」被区分开：前者落到中性的兜底行为（发呆 / 站立 / 落下），宠物不会
+  卡死，也不会乱跳。
+  **The "next behaviour list" constraint now really constrains.**  An empty
+  constrained pool no longer falls back to the global pool.
+- **宠物「自己不动」的时候，日志里终于有线索了。** 全项目 29 处「出异常就
+  默默跳过」的地方逐个看过并改掉了 —— 其中五处会让**用户看得见的功能
+  悄悄消失**：你的自定义动作解析失败会**整批不生效**（程序照常启动、界面
+  一切正常）；任务栏样式设置失败会让**宠物藏起来**、你根本找不到它；高缩放
+  屏上读不到 DPI 会让**宠物位置不对**。这些现在都会在日志里留下记录。
+  **The log finally says something when the pet stops behaving.**  All 29
+  silently swallowed exceptions were reviewed; the five that could make a
+  user-visible feature vanish now leave a trace.
+- **宠物拖动或投掷窗口时，不会再把窗口甩出当前桌面空间。** Windows 的虚拟
+  桌面是按**全局坐标**分区的，把窗口移到当前桌面范围之外的坐标，Windows
+  会**自动把它移到那个坐标所在的虚拟桌面** —— 你就再也切不回那扇窗口了，
+  只能关掉软件重开。现在所有窗口移动都会被限制在**窗口当前所在的那块屏幕**
+  内。
+  **Dragging or throwing a window no longer pushes it out of the current
+  virtual desktop**, where the user could never switch back to it.
+
+### 📚 文档 Docs
+
+- **README 里关于窗口互动的说明改成了实际行为。** 之前还写着「窗口互动只认
+  前台窗口」「要让它爬某个窗口，先把这个窗口点到前台」—— 而 1.1.2 早就把
+  规则改成了「光标所在的窗口，且没被完全遮盖」。照着旧说明做会以为程序有
+  bug。英文区的「已知限制」也补齐了（之前中文 7 条、英文只有 4 条）。
+  **The README now describes how window interaction actually works.**  It
+  still told users to focus a window first, which stopped being true in 1.1.2.
+- **发版脚本会自己找 GitHub CLI。** 它默认不在 PATH 里（安装时那个「Add to
+  PATH」默认不勾），所以以前发版能不能成**看运气** —— 有时行，有时同一个
+  人同一脚本就卡住。现在会自动去找，不用每次手工改 PATH。
+  **The release script now locates the GitHub CLI by itself** instead of
+  depending on whether it happens to be on PATH.
+
+### 🔧 变更 Changed
+
+- **发版前的自检更严了一点。** 新增的审计会检查每一处「出异常就默默跳过」
+  是否留下了可观测的记录；以后谁新增一处静默的异常处理，测试立刻会挂。
+  **The pre-release checks are stricter:** a new audit fails the build if any
+  silently swallowed exception is added.
+
+---
+
 ## [1.1.2] — 2026-10-23
 
 **窗口交互不再出悬空位移，爬墙的朝向也翻对了，被完全遮盖的窗口不再参与互动。**

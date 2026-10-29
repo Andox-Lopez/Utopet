@@ -225,6 +225,36 @@ def run(cmd, timeout=None, quiet=False, cwd=ROOT, check=True):
     return p.returncode
 
 
+#: 网络类错误的关键词 —— 只有这些才值得重试。
+#: Keywords that identify a *network* failure; only those are worth retrying.
+_NET_ERRORS = ("connection", "timeout", "timed out", "dial tcp",
+               "temporarily unavailable", "connection reset",
+               "connection refused", "eof", "tls", "ssl",
+               "could not resolve", "bad gateway", "service unavailable",
+               "502", "503", "504",
+               # ★ 2026-10-29 实测遇到的真实错误（发 v1.1.3-beta.1 时）：
+               #   error checking for existing release: Head
+               #   "https://api.github.com/repos/.../releases/tags/...":
+               #   dial tcp 198.18.1.67:443: connectex: ...
+               # 它里的关键词是「connectex」与「attempt failed」——
+               # 不是常见的 "connection" / "timeout"，所以下面单独列了。
+               "connectex", "attempt failed", "no such host",
+               "network is unreachable", "operation timed out")
+
+
+def is_network_error(text: str) -> bool:
+    """
+    这段错误输出是不是**网络**问题 / Is this a network failure?
+
+    只对网络类错误重试 —— tag 冲突、参数写错、权限不足这些重试多少次都没用，
+    而且**重试会掩盖真正的错误**。
+    Only network failures are retried: a tag conflict or a bad argument will
+    never fix itself, and retrying would only hide the real error.
+    """
+    low = (text or "").lower()
+    return any(k in low for k in _NET_ERRORS)
+
+
 def capture(cmd, timeout=None, cwd=ROOT):
     """跑命令并**拿到输出**，返回 `(rc, stdout)`。/ Run and capture output."""
     p = subprocess.run(cmd, cwd=cwd, timeout=timeout,
@@ -704,7 +734,35 @@ def publish(version: str, setup_path_: str, dry: bool, assume_yes: bool,
         cmd.append(setup_path_)
         say("  $ gh release create %s --repo %s%s …" % (
             tag, repo, " --prerelease" if prerelease else ""))
-        rc, out = capture(cmd, timeout=900)
+        # ⭐⭐ **网络类错误重试 3 次**。
+        #
+        # 2026-10-29 发 `v1.1.3-beta.1` 时这一步曾因代理的 fake-ip 连接超时而挂掉：
+        # `dial tcp 198.18.1.67:443: connectex: A connection attempt failed`。
+        # 那时 main 已推送、commit 已提交、构建与测试全过，**只有 tag 和
+        # Release 没建**，最后靠手写脚本补跑了 11 分钟（主要是 35.8 MB 上传）。
+        #
+        # 重试**不重建任何东西**：`gh release create` 对已存在的 tag 是幂等的
+        # （只有 tag 已存在**且已有 Release**才会失败）。
+        #
+        # 只对**网络类**错误重试：tag 冲突、参数错、权限不足重试没用，
+        # 而且重试会**掩盖真正的错误**。
+        #
+        # Retry only *network* failures.  A tag conflict or a permission error
+        # will never fix itself, and retrying would hide the real problem.
+        rc, out = 1, ""
+        for _attempt in range(1, 4):
+            rc, out = capture(cmd, timeout=900)
+            if rc == 0:
+                if _attempt > 1:
+                    ok("网络恢复，第 %d 次尝试成功" % _attempt)
+                break
+            if not is_network_error(out):
+                break
+            if _attempt < 3:
+                warn("网络错误（%s），5 秒后重试（%d/3）"
+                     % (out.strip().splitlines()[-1][:80] if out.strip() else "?",
+                        _attempt))
+                time.sleep(5)
         if rc != 0:
             say(out.strip()[-2000:])
             raise Abort("gh release create 返回码 %d" % rc)

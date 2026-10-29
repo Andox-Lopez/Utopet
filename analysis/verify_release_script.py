@@ -331,6 +331,54 @@ _c = rel.gh_cmd("release", "create", "v1.2.3")
 check(len(_c) >= 4 and _c[0] == rel.find_gh() and _c[1] == "release",
       "gh_cmd() 把可执行文件放在第 0 位", " ".join(_c[:3]))
 
+# ── ⑦ 网络重试（2026-10-29）────────────────────────────────────
+# 发 `v1.1.3-beta.1` 时，流程在最后一步因代理的 fake-ip 连接超时而挂掉：
+#     dial tcp 198.18.1.67:443: connectex: A connection attempt failed
+# 那时 main 已推送、commit 已提交、构建与测试全过，**只有 tag 和 Release 没建**，
+# 最后靠手写脚本补跑了 11 分钟（主要是 35.8 MB 上传）。
+#
+# 所以 `gh release create` 现在会对**网络类**错误重试 3 次。但**只对网络类** ——
+# tag 冲突、参数错、权限不足重试多少次都没用，而且重试会掩盖真正的错误。
+
+section("网络错误重试")
+_net_ok = [
+    "dial tcp 198.18.1.67:443: connectex: A connection attempt failed",
+    # ★ 2026-10-29 发 v1.1.3-beta.1 时**实际遇到**的错误（原文）
+    ("error checking for existing release: Head "
+     "\"https://api.github.com/repos/Andox-Lopez/Utopet/releases/tags/v1.1.3-beta.1\": "
+     "dial tcp 198.18.1.67:443: connectex: A connection attempt failed because "
+     "the connected party did not properly respond after a period of time, or "
+     "established connection failed because connected host has failed to respond."),
+    "Read timed out",
+    "connection reset by peer",
+    "TLS handshake timeout",
+    "503 Service Unavailable",
+]
+for _t in _net_ok:
+    check(rel.is_network_error(_t),
+          "认得出网络类错误：%s" % _t[:48])
+
+_net_bad = [
+    "HTTP 422: Validation Failed (tag already exists)",
+    "HTTP 404: Not Found",
+    "could not find any release with tag",
+    "permission denied",
+    "HTTP 401: Unauthorized",
+]
+for _t in _net_bad:
+    check(not rel.is_network_error(_t),
+          "不把非网络错误当成网络错误（免得白重试）：%s" % _t[:48])
+
+check(not rel.is_network_error(""),
+      "空输出不算网络错误")
+
+# 源码里必须真的用了重试 —— 光有 is_network_error() 不算数
+_src = inspect.getsource(rel)
+check("_NET_ERRORS" in _src and "is_network_error(out)" in _src,
+      "release.py 里确实接上了重试逻辑")
+check("for _attempt in range(1, 4)" in _src,
+      "重试次数是 3 次")
+
 print()
 print("=" * 60)
 if FAILS:

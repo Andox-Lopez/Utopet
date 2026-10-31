@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout,
 from .. import win32
 from ..icons import app_icon, logo_pixmap
 from ..i18n import get_i18n
+from .status_window import StatusWindow
 
 __all__ = ["TaskbarPanel"]
 
@@ -101,10 +102,29 @@ class TaskbarPanel(QWidget):
         self.char_label.setStyleSheet("color: palette(mid); font-size: 12px;")
         outer.addWidget(self.count_label)
         outer.addWidget(self.char_label)
-        # 1.0.3：状态摘要（心情好/累/生病…），由 CalMode 推出
-        self.state_label = QLabel()
-        self.state_label.setStyleSheet("color: palette(mid); font-size: 12px;")
-        outer.addWidget(self.state_label)
+        # 1.2.0：状态摘要**可点击** —— 点开后看每只宠物的四个数值。
+        #
+        # 面板只有 320px 宽，一行摘要塞不下四个数值，多角色时更是
+        # 只能拿第一只当「代表」。所以：**摘要行保持单行，
+        # 完整数值放进点开的窗口**。
+        #
+        # The 320px panel cannot hold four numbers, let alone one row per pet,
+        # so the summary stays one line and the details live in a popover.
+        #
+        # 用 QPushButton 而不是给 QLabel 装 eventFilter：按钮自带点击信号、
+        # 键盘可达（Tab/空格）、有 hover 反馈；QLabel 都得手写。
+        # A button over an event-filtered QLabel: it gets a click signal,
+        # keyboard access and hover feedback for free.
+        self.status_btn = QPushButton()
+        self.status_btn.setFlat(True)
+        self.status_btn.setCursor(Qt.PointingHandCursor)
+        self.status_btn.setStyleSheet(
+            "QPushButton { color: palette(mid); font-size: 12px;"
+            " text-align: left; padding: 2px 0; border: none; }"
+            "QPushButton:hover { color: palette(text); }")
+        self.status_btn.clicked.connect(self._open_status_window)
+        outer.addWidget(self.status_btn)
+        self._status_window = None
 
         outer.addSpacing(4)
 
@@ -312,19 +332,41 @@ class TaskbarPanel(QWidget):
 
     # ------------------------------------------------------------------
 
+
+    def _open_status_window(self):
+        """打开（或唤出）详细状态窗口 / Open (or raise) the status window."""
+        # 已经开着就唤到前台，不重复弹窗口。
+        # Raise the existing one instead of opening a second window.
+        if self._status_window is not None:
+            try:
+                self._status_window.refresh()
+                self._status_window.show()
+                self._status_window.raise_()
+                self._status_window.activateWindow()
+                return
+            except RuntimeError:
+                # 窗口已被回收（C++ 对象没了），重建一个
+                self._status_window = None
+        self._status_window = StatusWindow(self.manager)
+        self._status_window.show()
+        self._status_window.raise_()
+        self._status_window.activateWindow()
     def refresh_status(self):
         n = str(self.manager.count())
         self.count_label.setText(self.t.t("panel.count").replace("{0}", n))
         self.char_label.setText(self.t.t("panel.character").replace(
             "{0}", self.manager.settings.get("character", "-")))
-        # 状态摘要：取第一只宠物的状态。多角色时这只是「代表」，不做逐只列表 ——
-        # 面板只有 320px 宽，塞不下 4 行数值。
-        # The first pet's state stands for all of them; the 320px panel has no
-        # room for a per-pet list.
+        # 摘要行保持单行（面板宽度没变），完整数值在点开的窗口里。
+        # The summary stays one line; the full numbers are in the popover.
         m = self.manager.mascots[0] if self.manager.mascots else None
-        self.state_label.setText(
-            m.status.summary(self.manager.settings.get("language", "zh_CN"))
-            if m is not None else "")
+        if m is not None:
+            self.status_btn.setText(m.status.summary(
+                self.manager.settings.get("language", "zh_CN")))
+            self.status_btn.setToolTip(
+                self.t.t("panel.state_hint", "Click for details"))
+        else:
+            self.status_btn.setText("")
+            self.status_btn.setToolTip("")
         # 穿透按钮做成可勾选的：用户一眼能看出「现在开着没有」，
         # 不必点一下试试看（而点击是有副作用的）。
         # The button is checkable so the current state is visible at a glance —

@@ -27,8 +27,15 @@ VPet 的公式非常紧凑::
 
 本项目的取舍
 ------------
-**不引入养成 UI，也不引入饱腹度/口渴度那套数值。** 那是 1.1.0 的事。
-1.0.3 只把它的两样东西拿过来：
+**1.2.0 起：开始引入养成 UI，但不是把它做成游戏。**
+数值仍然是「给 `state()` 提供输入」这一件事，只是现在**用户看得见、摸得着**：
+面板能显示四个数值（`detail()`），摸头/拖拽/抛出会分别影响它们（`interact()` 的
+`kind`）。仍然**没有任务、没有目标、没有失败惩罚** —— 状态只改行为出现的
+频率，绝不改行为集合。
+
+No progression *game* here.  The numbers still only feed `state()`, but from
+1.2.0 the user can see them (`detail()`) and move them (`interact()`'s `kind`).
+There are still no quests, no goals, no penalties.
 
 1. `state()` —— 阈值转换（照抄思路，阈值按我们的取值重新定）
 2. `weight_bias()` —— 一个 0.4~1.6 的乘数，由状态决定
@@ -42,6 +49,12 @@ multiplier; the actions are unchanged, only how often they come up.
 """
 
 from __future__ import annotations
+
+# ⭐ 引入 `tr()` 只为了把面板文案本地化。
+# `i18n.py` 只依赖 json/os，**与引擎之间没有循环导入**，放心引。
+# Importing `tr()` is safe: `i18n.py` only needs json/os, so there is no
+# import cycle with the engine.
+from ..i18n import tr
 
 __all__ = ["PetState", "PetStatus", "STATE_NAMES_ZH", "STATE_NAMES_EN",
            "CAL_CLASSES"]
@@ -270,10 +283,63 @@ class PetStatus:
         strength = min(200.0, max(0.0, strength)) / 100.0
         return min(3.0, max(0.2, 1.0 + (base - 1.0) * strength))
 
+    def detail(self) -> dict:
+        """
+        四个数值 + 状态名（**结构化**的，给详细面板用）。
+
+        All four numbers as structured data, for the detailed status popover.
+
+        不走字符串：面板要自己排版、要列出多只宠物，
+        拼好的一行字符串没法重用。
+
+        Not a string: the panel lays it out itself and lists every pet, so a
+        pre-joined line would be useless there.
+        """
+        return {
+            "state": self.cached_state(),
+            "feeling": self.feeling,
+            "energy": self.energy,
+            "health": self.health,
+            "likability": self.likability,
+        }
+
     def summary(self, lang: str = "zh_CN") -> str:
-        """一行状态摘要（给面板用）/ A one-line summary for the panel."""
-        names = STATE_NAMES_EN if lang.startswith("en") else STATE_NAMES_ZH
+        """
+        一行状态摘要（给面板用） / A one-line summary for the panel.
+
+        ★ **标签走 `tr()`**（用 `panel.mood` / `panel.stamina`）。
+        以前是硬编码的中/英两个分支，**日语用户会看到中文**
+        （因为 `lang.startswith("en")` 为 False 时一律走中文分支）。
+
+        Labels come from `tr()`, so Japanese no longer falls through to Chinese.
+
+        ★ `lang` 参数保留是为了向后兼容（老调用方还在传），
+        但实际显示的是用户在设置里选的语言。
+        The `lang` argument is kept for compatibility; the text follows the
+        language chosen in settings.
+        """
         st = self.cached_state()
-        if lang.startswith("en"):
-            return f"{names[st]}  mood {self.feeling:.0f}  energy {self.energy:.0f}"
-        return f"{names[st]}  心情 {self.feeling:.0f}  体力 {self.energy:.0f}"
+        mood = tr("panel.mood", "Mood")
+        stamina = tr("panel.stamina", "Stamina")
+        return f"{self.state_name(st)}  {mood} {self.feeling:.0f}  {stamina} {self.energy:.0f}"
+
+    @staticmethod
+    def state_name(state: str) -> str:
+        """
+        状态的显示名（**走 i18n**） / Display name for a state, localised.
+
+        不再看 `lang` 参数的前缀 —— 用户在设置里选了哪种语言，
+        `tr()` 就返回哪种，日语也能正确显示。
+
+        Uses the language the user picked in settings, so Japanese works too.
+        """
+        keys = {
+            PetState.SICK: "state.sick",
+            PetState.POOR: "state.poor",
+            PetState.NORMAL: "state.normal",
+            PetState.HAPPY: "state.happy",
+        }
+        key = keys.get(state)
+        if key is None:
+            return state
+        return tr(key, STATE_NAMES_EN.get(state, state))

@@ -18,6 +18,20 @@ import random
 
 from ..xml.config import BehaviorDef, BehaviorSet
 from ..xml.expr import warn_eval_failure
+from .petstate import ACTIVE_KEYS, QUIET_KEYS
+
+#: 番茄钟「专注」时段对行为权重的乘数（1.2.0 F4）。
+#:
+#: 专注时让宠物**安静**：活跃行为减半，安静行为略增。乘数有下界 ——
+#: **绝不把任何行为权重清零**（只改频率，不改行为集合），专注时是「不打扰」，
+#: 不是「完全不动」。
+#:
+#: During a focus phase the pet stays *quiet*: active behaviours are halved,
+#: quiet ones nudged up.  Multipliers are floored above zero — focus means "do
+#: not disturb", never "freeze".
+POMO_FOCUS_ACTIVE = 0.5
+POMO_FOCUS_QUIET = 1.1
+POMO_FOCUS_MIN = 0.05        # 权重下界：任何行为都不会彻底消失
 
 __all__ = ["Brain"]
 
@@ -129,7 +143,33 @@ class Brain:
             cal = data.get("cal_overrides", {}) if isinstance(data, dict) else {}
             rule = cal.get(name) if isinstance(cal, dict) else None
             value *= status.weight_bias(name, rule)
+        # 1.2.0 F4：番茄钟专注时段让宠物安静（只改频率，不改集合）。
+        value *= self._pomodoro_bias(name)
         return value
+
+    def _pomodoro_bias(self, name: str) -> float:
+        """
+        番茄钟阶段给某个行为的权重乘数 / Weight multiplier from the Pomodoro.
+
+        * **专注（WORK）**：活跃行为 ×0.5（跳跃/奔跑/爬墙少一半），安静行为 ×1.1；
+          其余中性行为 ×1.0。
+        * **休息 / 空闲 / 暂停**：×1.0（休息时正常活动，不额外推高）。
+
+        ⭐ **只在 WORK 一个阶段起作用** —— 用户开番茄钟是为了专注，只有那段
+        需要「不打扰」；休息本来就是让宠物放松的时候。
+
+        ⭐ 与 `PetStatus.weight_bias()` 是**相乘**关系、彼此独立：一个管心情，
+        一个管番茄钟，但都遵守同一条 —— 权重有界、不清零、不改行为集合。
+        """
+        pom = getattr(self.manager, "pomodoro", None)
+        phase = getattr(pom, "phase", None)
+        if phase != "work":
+            return 1.0
+        if any(k in name for k in ACTIVE_KEYS):
+            return POMO_FOCUS_ACTIVE
+        if any(k in name for k in QUIET_KEYS):
+            return POMO_FOCUS_QUIET
+        return 1.0
 
     # ------------------------------------------------------------------
     def _global_pool(self, mascot, ns):

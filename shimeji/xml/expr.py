@@ -269,6 +269,39 @@ class Expr:
         return "Expr(%r, dynamic=%s)" % (self.raw, self.dynamic)
 
 
+def check_expression(raw: str | None) -> tuple[bool, str]:
+    """
+    给**编辑器**用的实时校验 / Live validation for the action editor.
+
+    返回 `(是否合法, 说明)`。这是 1.2.0 F6：动作编辑器里写错表达式，应当场
+    标红并给出原因，而不是保存后运行时静默失效（这个项目吃过这个亏 —— 表达式
+    编译失败会退化成「永远失败」，用户看到的是「行为没了，日志里一个字都没有」）。
+
+    * 空 / 不是 `#{}` / `${}` 包裹 -> `(True, "")`（当成普通字面量，不管）
+    * 是表达式且能编译 -> `(True, "")`
+    * 是表达式但编译失败 -> `(False, 原因)`
+
+    只做**编译期**检查（语法对不对），不做求值 —— 求值需要真实的宠物/环境
+    命名空间，编辑器里没有，也不该有。像 `#{floor()}` 这种能编译但运行时才因
+    缺参数出错的，编译期不报（也没法报）。
+
+    Compile-time only: evaluation needs a live mascot/environment namespace the
+    editor does not have.
+    """
+    if raw is None:
+        return True, ""
+    s = raw.strip()
+    if not s:
+        return True, ""
+    expr = Expr.parse(s)
+    if expr is None:
+        # 不带 #{}/${} 包裹 = 普通字面量（数字/字符串），不是表达式，不校验。
+        return True, ""
+    if expr.code is None:
+        return False, "表达式无法解析（语法错误或含有不支持的写法）：%s" % expr.raw
+    return True, ""
+
+
 def _coerce(text, default=None):
     """把字面量字符串转成 Python 值 / Coerce a literal string into a Python value."""
     if text is None:

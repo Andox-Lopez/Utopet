@@ -132,6 +132,32 @@ class CustomConfig:
     def remove(self, name: str):
         self.actions = [a for a in self.actions if a["name"] != name]
 
+    def validate_expressions(self) -> list[tuple[str, str, str]]:
+        """
+        扫描所有动作字段里的 `#{}`/`${}` 表达式，返回编译失败的清单。
+
+        1.2.0 F6。自定义动作的数值字段（移动速度 / 长度 / 目的地…）都允许写
+        表达式；写错了以前是**运行时静默退化**（`Expr.code is None` ->
+        「永远失败」），用户只看到动作没了，不知道为什么。这里把错误在
+        **加载阶段**就摆到台面上。
+
+        返回 `[(动作名, 字段, 原因), ...]`；空列表 = 全合法（或没有表达式）。
+
+        Returns `(action name, field, reason)` tuples for every expression that
+        fails to compile; an empty list means all good.
+        """
+        from .xml.expr import check_expression
+
+        problems: list[tuple[str, str, str]] = []
+        for a in self.actions:
+            name = a.get("name", "?")
+            for p in a.get("poses", []):
+                for field in ("base", "velocity", "duration"):
+                    ok, why = check_expression(p.get(field))
+                    if not ok:
+                        problems.append((name, field, why))
+        return problems
+
     @property
     def names(self) -> set[str]:
         return {a["name"] for a in self.actions}

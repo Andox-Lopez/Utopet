@@ -887,6 +887,16 @@ class SettingsWindow(QWidget):
         b_open.clicked.connect(self._open_custom)
         g2.layout().addRow("custom.xml", b_open)
 
+        # ⭐ F6：自定义动作里的表达式（#{} / ${}）编译失败时，在这里明确提示。
+        # 以前写错表达式是运行时静默退化（动作没了、日志没字），用户无从下手。
+        # Compile errors in custom expressions are surfaced here instead of
+        # silently killing the action at runtime.
+        self.custom_expr_label = QLabel("")
+        self.custom_expr_label.setWordWrap(True)
+        self.custom_expr_label.setStyleSheet("color: #c0392b; font-size: 12px;")
+        g2.layout().addRow("", self.custom_expr_label)
+        self._refresh_custom_expr_status()
+
         # 日志入口。日志一直在写，但**没有入口等于没有** —— 用户来报问题时
         # 我们只能说「去 data 目录里找那个 log」，而多数人并不知道 data 在哪。
         # A way in to the log.  It was always being written, but without an entry
@@ -1305,6 +1315,36 @@ class SettingsWindow(QWidget):
                 # The user clicked "open" and nothing happened; staying silent
                 # makes the button look broken.
                 log.warning("打开自定义配置失败：%s", path, exc_info=True)
+
+    def _refresh_custom_expr_status(self):
+        """
+        扫描自定义动作里的表达式，把编译失败的显示在设置页（F6）。
+
+        ⭐ 复用 `CustomConfig.validate_expressions()`；这里只负责**呈现**。
+        没有错误就清空标签（不留旧的红字吓人）。
+        """
+        label = getattr(self, "custom_expr_label", None)
+        if label is None:
+            return
+        try:
+            problems = self.custom.validate_expressions()
+        except Exception:
+            log.warning("校验自定义表达式失败", exc_info=True)
+            label.setText("")
+            return
+        if not problems:
+            label.setText("")
+            return
+        lines = [self.t.t("msg.custom_expr_error",
+                         "自定义动作里有无法解析的表达式：")]
+        for name, field, why in problems[:8]:
+            lines.append("· %s / %s" % (name, field))
+        if len(problems) > 8:
+            lines.append("… 还有 %d 处" % (len(problems) - 8))
+        label.setText("\n".join(lines))
+        log.warning("自定义动作有 %d 处表达式无法解析：%s",
+                    len(problems),
+                    "; ".join("%s/%s" % (n, f) for n, f, _ in problems[:8]))
 
     # ------------------------------------------------------------------
     # 关于 / about

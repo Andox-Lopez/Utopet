@@ -163,7 +163,7 @@
   "panel.state_detail": "Pet Status",
   "panel.state_hint": "Click for each pet's numbers",
   "panel.state_none": "No pets right now",
-  "about.version": "Version",
+  "msg.custom_expr_error": "Some custom-action expressions cannot be parsed:",  "about.version": "Version",
   "about.author": "Karandox",
   "msg.startup_failed": "Launch at login could not be written to the registry (policy or permission), please add it manually.",
   "btn.open_log": "Open log",

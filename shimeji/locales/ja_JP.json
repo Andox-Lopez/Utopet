@@ -163,7 +163,7 @@
   "panel.state_detail": "ペットの状態",
   "panel.state_hint": "クリックで各ペットの数値を表示",
   "panel.state_none": "現在ペットはいません",
-  "about.version": "バージョン",
+  "msg.custom_expr_error": "カスタム動作に解析できない式があります：",  "about.version": "バージョン",
   "about.author": "Karandox",
   "msg.startup_failed": "自動起動をレジストリに書き込めませんでした（ポリシーまたは権限の可能性）。手動で追加してください。",
   "btn.open_log": "ログを開く",

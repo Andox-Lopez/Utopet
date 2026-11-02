@@ -163,7 +163,7 @@
   "panel.state_detail": "宠物状态",
   "panel.state_hint": "点这里看每只宠物的详细数值",
   "panel.state_none": "现在没有宠物",
-  "about.version": "版本",
+  "msg.custom_expr_error": "自定义动作里有无法解析的表达式：",  "about.version": "版本",
   "about.author": "Karandox",
   "msg.startup_failed": "开机自动启动没能写进注册表（可能被系统策略或权限限制），请手动添加。",
   "btn.open_log": "打开日志",

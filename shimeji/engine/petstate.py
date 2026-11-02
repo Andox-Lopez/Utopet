@@ -50,6 +50,10 @@ multiplier; the actions are unchanged, only how often they come up.
 
 from __future__ import annotations
 
+import logging
+
+_log = logging.getLogger("shimeji")
+
 # ⭐ 引入 `tr()` 只为了把面板文案本地化。
 # `i18n.py` 只依赖 json/os，**与引擎之间没有循环导入**，放心引。
 # Importing `tr()` is safe: `i18n.py` only needs json/os, so there is no
@@ -129,6 +133,15 @@ class PetStatus:
         #: 好感度 0-100，随交互缓慢增长 / rapport, grows slowly with interaction
         self.likability = float(likability)
         self._state: str = PetState.NORMAL
+        # ⭐ F3：状态迁移 / 好感里程碑的监听者（由 Manager 注册）。
+        # Listeners for state changes and rapport milestones (F3).
+        self.on_state_changed = None   # callable(new, old, owner)
+        self.on_milestone = None       # callable(value, owner)
+        #: 持有本状态的宠物（Manager 回调要用，见下）/ the owning mascot.
+        self.owner = None
+        #: 已经报过的里程碑（一生一次；重启即重置）
+        #: Milestones already announced (once per process lifetime).
+        self._milestones_done: set = set()
         self._ticks = 0
 
     # ------------------------------------------------------------------
@@ -181,8 +194,20 @@ class PetStatus:
         """
         s = self.state()
         if s != self._state:
+            old = self._state
             self._state = s
-        return s
+            # ⭐ F3：迁移时通知监听者（回调抛异常不能打断状态机）。
+            # Notify listeners; a bad callback must not break the state machine.
+            cb = self.on_state_changed
+            if cb is not None:
+                try:
+                    cb(s, old, self.owner)
+                except Exception:
+                    # ⭐ 可观测（项目纪律）：静默吞掉会变成「状态台词失效
+                    # 且日志里一个字都没有」。
+                    # Observable, per project discipline.
+                    _log.warning("状态迁移回调失败", exc_info=True)
+        return self._state
 
     # ------------------------------------------------------------------
     def tick_slow(self) -> None:
@@ -208,20 +233,81 @@ class PetStatus:
         elif self.health < 90 and self.energy < 25:
             self.health = max(30.0, self.health - 0.3)
         self.clamp()
+        self._check_milestones()
+
+    #: 互动强度表 / interaction strengths.
+    #:
+    #: 参照 `tick_slow()` 的漂移（心情每 15 秒 -0.6）来定量级：
+    #: 摸头 +2.2 约等于抗衛 55 秒的自然衰减 —— 摸几下就看得见变化，
+    #: 但不会几下就满。
+    #:
+    #: Sized against the drift in `tick_slow()` (mood -0.6 per 15 s): a pat is
+    #: worth about 55 s of recovery, so it shows up quickly without being
+    #: something you can max out in a few taps.
+    _INTERACTIONS = {
+        # 摸头 / 点一下：最轻也最高频，应该是主要的正向来源；几乎不累
+        # ️ energy 写的是**消耗量**（正数），下面做减法。
+        # 我第一版表里写负数、代码又做减法，结果体力不降反升 ——
+        # 验证时才发现。The values are *costs*, subtracted below.
+        "pat":   {"feeling": +2.2, "likability": +0.15, "energy": 0.2},
+        # 拖拽：用户在「带着它走」，亲密但费劲
+        "drag":  {"feeling": +0.8, "likability": +0.45, "energy": 1.6},
+        # 抛出：玩闹，开心但最累
+        "throw": {"feeling": +1.8, "likability": +0.10, "energy": 2.4},
+    }
+
+    def _check_milestones(self) -> None:
+        """
+        好感跨过 50/80/100 时通知一次（每个一生一次）。
+
+        ⭐ 在 `interact()` 与 `tick_slow()` 的**末尾**调用 —— 好感只在那里变化。
+
+        Milestones are 50/80/100; each fires once per process lifetime.
+        Called at the *end* of `interact()` and `tick_slow()`, the only two
+        places likability changes.
+        """
+        for mark in (50, 80, 100):
+            if self.likability >= mark and mark not in self._milestones_done:
+                self._milestones_done.add(mark)
+                cb = self.on_milestone
+                if cb is not None:
+                    try:
+                        cb(mark, self.owner)
+                    except Exception:
+                        _log.warning("好感里程碑回调失败", exc_info=True)
 
     def interact(self, kind: str = "touch") -> None:
         """
         被互动了一次 / The user interacted with the pet.
 
-        ``kind`` 区分强度：拖拽/抛出消耗体力但涨心情，摸头几乎不消耗。
-        Dragging costs stamina but lifts the mood; a pat barely costs anything.
-        """
-        del kind  # 强度差异留到 1.1.0 有了养成 UI 再细分
-        self.feeling = min(100.0, self.feeling + 1.6)
-        self.likability = min(100.0, self.likability + 0.25)
-        self.energy = max(0.0, self.energy - 1.0)
-        self.clamp()
+        ⭐⭐ ``kind`` **真的会改变数值**（1.2.0 F2）。
 
+        | kind    | 心情   | 好感   | 体力   | 说明 |
+        |---------|--------|--------|--------|------|
+        | pat     | +2.2   | +0.15  | -0.2   | 摸头，几乎不累 |
+        | drag    | +0.8   | +0.45  | -1.6   | 拖拽，亲密但费劲 |
+        | throw   | +1.8   | +0.10  | -2.4   | 抛出，开心但最累 |
+
+        **为什么摸头活得最多**：它是最轻量、最高频的互动。
+        在这之前，**点击/摸头完全不算互动** ——
+        `interact()` 只在拖拽与抛出两处被调用，
+        用户点宠物（最自然的动作）却得不到任何回应。
+
+        ⭐ **未知的 kind 会退回通用值**（和以前一样），
+        所以旧调用方不会因为写错 kind 而变成无效。
+
+        An unknown ``kind`` falls back to the old catch-all values, so a typo
+        cannot silently disable the effect.
+        """
+        rule = self._INTERACTIONS.get(kind)
+        if rule is None:
+            # 未知类型：退回以前的通用值（中等强度）
+            rule = {"feeling": +1.6, "likability": +0.25, "energy": 1.0}
+        self.feeling = min(100.0, self.feeling + rule["feeling"])
+        self.likability = min(100.0, self.likability + rule["likability"])
+        self.energy = max(0.0, self.energy - rule["energy"])
+        self.clamp()
+        self._check_milestones()
     # ------------------------------------------------------------------
     def weight_bias(self, behavior_name: str, rule: dict | None = None) -> float:
         """

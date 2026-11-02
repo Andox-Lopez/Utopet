@@ -1090,7 +1090,13 @@ def main() -> int:
     # 互动与时间漂移
     st.feeling, st.likability, st.energy = 50.0, 0.0, 50.0
     before = st.feeling
+    # ⭐ 1.2.0 起数值在**松手时**结算（按下那刻还分不清是摸头还是拖拽），
+    # 所以这里要 begin + end 才算一次完整互动。
+    # Since 1.2.0 the numbers settle on *release*, so both calls are needed.
     mgr.begin_drag(m)
+    # 真的拖走一段，好让断言名副其实（措辞是「拖拽宠物」，不是「摸一下」）
+    m.anchor = Pt(m.anchor.x + 50, m.anchor.y)
+    mgr.end_drag(m)
     check(st.feeling > before, "拖拽宠物会涨心情（用户互动被计入）",
           f"{before:.1f} -> {st.feeling:.1f}")
     f0 = st.feeling

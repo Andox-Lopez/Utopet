@@ -240,6 +240,9 @@ class Manager(QObject):
         self._pomodoro_window = None
         #: 气泡台词 / speech balloons. 台词库是无 Qt 的纯逻辑，气泡窗口在 gui。
         self.serifu = Serifu(settings)
+        # ⭐ F3：状态台词的全局冷却 —— 所有宠物共享，防止多只轮流刷屏。
+        # Global cooldown for state lines, shared by all pets.
+        self._state_say_ts = 0.0
         self._balloon = None            # 懒建 / created lazily
         self._serifu_elapsed_ms = 0
         #: 番茄钟统计 / Pomodoro statistics.
@@ -624,6 +627,11 @@ class Manager(QObject):
                    always_on_top=bool(self.settings.get("always_on_top", True)),
                    opacity=float(self.settings.get("opacity", 1.0)),
                    bundle=bundle)
+        # ⭐ F3：状态变化 / 好感里程碑 -> 说一句对应的话。
+        # F3: state changes and rapport milestones get a line.
+        m.status.owner = m
+        m.status.on_state_changed = self._on_pet_state_changed
+        m.status.on_milestone = self._on_pet_milestone
         # 新召唤的宠物要继承当前的穿透状态 —— 否则用户在菜单里开了穿透，
         # 之后再召唤出来的却是「能点」的，同屏两只行为不一致，很费解。
         # A newly summoned pet inherits the current click-through state: with
@@ -939,6 +947,71 @@ class Manager(QObject):
         return self._balloon_window().say(
             text, mascot,
             always_on_top=bool(self.settings.get("always_on_top", True)))
+
+    # ------------------------------------------------------------------
+    # 状态台词（1.2.0 F3）/ state lines
+    # ------------------------------------------------------------------
+    def _state_cooldown_ms(self) -> int:
+        """
+        两次状态台词之间的最小间隔；0 = 状态台词整个关掉。
+
+        ⭐ 默认 **30 秒**：状态是缓慢漂移的，短时间内连续迁移本来就少见；
+        这个闸是防「用户来回摸 -> 心情反复跨阈值 -> 气泡刷屏」。
+        """
+        if self.settings is None:
+            return 30_000
+        try:
+            sec = int(self.settings.get("serifu_state_cooldown", 30))
+        except (TypeError, ValueError):
+            sec = 30
+        return max(0, min(3600, sec)) * 1000
+
+    def _state_line_allowed(self) -> bool:
+        """全局冷却是否已过 / Has the global cooldown elapsed?"""
+        cd = self._state_cooldown_ms()
+        if cd <= 0:
+            return False                     # 0 = 状态台词关闭
+        now = time.monotonic() * 1000.0
+        if now - self._state_say_ts < cd:
+            return False
+        self._state_say_ts = now
+        return True
+
+    def _on_pet_state_changed(self, new: str, old: str, m=None) -> None:
+        """
+        状态迁移（由 `PetStatus.on_state_changed` 调）。
+
+        ⭐ `m` 是触发的宠物（PetStatus 把 `owner` 传进来）—— 不能用
+        `callback is self._on_...` 去 `next()` 找：**每次访问 bound method
+        都会新建对象**，`is` 永远为 False（这是我第一次实现踩的坑）。
+
+        ⭐ 回调里不能再调 `cached_state()`（会递归）：新状态已经传进来了。
+        """
+        if not self._state_line_allowed():
+            return
+        if m is None:
+            m = self.mascots[0] if self.mascots else None
+        if m is None:
+            return
+        self.say(m, self.serifu.pick(self.serifu.state_phrases(m.bundle, new)))
+
+    def _on_pet_milestone(self, value: int, m=None) -> None:
+        """好感里程碑（由 `PetStatus.on_milestone` 调）。"""
+        if not self._state_line_allowed():
+            return
+        if m is None:
+            m = self.mascots[0] if self.mascots else None
+        if m is None:
+            return
+        table = {
+            50: ["我们更熟了一点呢。", "We're getting closer.",
+                 "ちょっと仲良くなったね。"],
+            80: ["最喜欢你了！", "I like you a lot!",
+                 "大好きだよ！"],
+            100: ["一直陪着我吧。", "Stay with me always.",
+                  "ずっとそばにいてね。"],
+        }
+        self.say(m, self.serifu.pick(table.get(value, ["……"])))
 
     def _tick_balloon(self):
         """
@@ -1450,14 +1523,28 @@ class Manager(QObject):
     # ------------------------------------------------------------------
     # 拖拽 / dragging
     # ------------------------------------------------------------------
-    def begin_drag(self, mascot: Mascot):
-        """鼠标按下：立刻接管为拖拽行为 / Mouse down: take over as the drag behaviour."""
-        mascot.status.interact("drag")
-        self._force_behavior(mascot, BEHAVIOR_DRAGGED, interrupt=True)
+    #: 判定「摸头」还是「拖拽」的位移阈值（像素）。
+    #:
+    #: 手抖、点中了但点偶了这些情况都不该算拖拽。
+    #: A few pixels of hand tremor must not count as a drag.
+    DRAG_THRESHOLD_PX = 8
 
+    def begin_drag(self, mascot: Mascot):
+        """
+        鼠标按下：接管为拖拽行为 / Mouse down: take over as the drag behaviour.
+
+        ⭐ **不立刻结算数值**。按下的瞬间还分不清是「摸一下」还是
+        「要拖着走」 —— 得等到松手看位移（见 `end_drag`）。
+        所以这里只记下起点。
+
+        Deliberately does **not** settle the numbers yet: at press time we cannot
+        tell a pat from a drag.  Just record where it started.
+        """
+        mascot._drag_from = (mascot.anchor.x, mascot.anchor.y)
+        self._force_behavior(mascot, BEHAVIOR_DRAGGED, interrupt=True)
     def end_drag(self, mascot: Mascot):
         """
-        鼠标松开：切成「投げられる」/ Mouse up: switch to the thrown behaviour.
+        鼠标松开：切成「抛げられる」/ Mouse up: switch to the thrown behaviour.
 
         这里用 interrupt：松手之后用户期待宠物**立刻**被甩出去。
         如果排队等当前动作跑完，宠物会先把手上的动画做完再飞出去 ——
@@ -1466,10 +1553,33 @@ class Manager(QObject):
         Interrupt here: on release the user expects the pet to fly *now*.  Queuing
         would let the current animation finish first — up to several seconds of
         delay, which is the reported "the throw does not work".
-        """
-        mascot.status.interact("throw")
-        self._force_behavior(mascot, BEHAVIOR_THROWN, interrupt=True)
 
+        ⭐ **数值按实际互动结算**（1.2.0 F2）：
+        * 位移很小（手没动） -> **摸头** `pat`
+        * 位移够大（真的拖着走了） -> 拖拽 `drag` + 抛出 `throw`
+
+        ⚠️ **不改产品行为**：宠物照样会被「抛出」（原来就是无条件
+        切 `BEHAVIOR_THROWN`）。这里只改**数值按哪种互动结算**。
+
+        Settles the numbers by how far the pet actually moved.  The pet is still
+        thrown either way — that behaviour is unchanged.
+        """
+        moved = 0.0
+        start = getattr(mascot, "_drag_from", None)
+        if start is not None:
+            moved = max(abs(mascot.anchor.x - start[0]),
+                        abs(mascot.anchor.y - start[1]))
+        mascot._drag_from = None
+        if start is not None and moved < self.DRAG_THRESHOLD_PX:
+            # 点了一下没拖动 -> 摸头。这是最常见的互动，
+            # 1.2.0 之前**它完全不算互动**。
+            # A tap that did not move: a pat.  Before 1.2.0 this counted as
+            # nothing at all.
+            mascot.status.interact("pat")
+        else:
+            mascot.status.interact("drag")
+            mascot.status.interact("throw")
+        self._force_behavior(mascot, BEHAVIOR_THROWN, interrupt=True)
     # ------------------------------------------------------------------
     # 托盘与菜单 / tray and menus
     # ------------------------------------------------------------------

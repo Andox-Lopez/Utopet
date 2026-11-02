@@ -41,6 +41,38 @@ BUILTIN_PHRASES = [
 
 #: 角色包里台词文件的名字（原版是全大写 SERIFU，两种都收）。
 #: Phrase-file names inside a character pack (the original uses SERIFU).
+
+#: 内置的**状态**台词：状态变化时说的话（1.2.0 F3）。
+#: 普通与开心各配几句日常的；生病/不佳是抱怨。中日英混合，同 BUILTIN_PHRASES。
+#:
+#: Built-in *state* lines, spoken when the pet's state changes (1.2.0 F3).
+#: Trilingual, in the same spirit as BUILTIN_PHRASES.
+BUILTIN_STATE_PHRASES = {
+    "sick": [
+        "不太舒服……想休息一下。",
+        "I don't feel so good...",
+        "ちょっと調子が悪いかも……",
+    ],
+    "poor": [
+        "今天有点没精神。",
+        "Feeling a bit low today.",
+        "なんだか元気がないなぁ。",
+    ],
+    "normal": [
+        "普普通通的一天也很好。",
+        "An ordinary day is fine too.",
+        "平凡な一日も悪くないね。",
+    ],
+    "happy": [
+        "今天心情超好！",
+        "I'm feeling great today!",
+        "今日はいい気分！",
+    ],
+}
+
+#: 状态台词里允许的 state 键 / states that have their own lines.
+STATE_KEYS = tuple(BUILTIN_STATE_PHRASES)
+
 PHRASE_FILES = ("serifu.txt", "SERIFU.txt", "serifu.dat", "SERIFU.dat")
 
 #: 行为名里带这些词就冒泡（原版行为就叫「セリフ」）。
@@ -169,6 +201,40 @@ class Serifu:
                    for tok in TRIGGER_TOKENS)
 
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 状态台词（1.2.0 F3）/ state lines
+    # ------------------------------------------------------------------
+    def state_phrases(self, bundle, state: str) -> list[str]:
+        """
+        某个角色在某状态下的台词 / lines for one character in one state.
+
+        优先级与 `phrases_for()` 一致：角色自带的 `serifu_<state>.txt` >
+        设置里的 `serifu_state_<state>` > 内置 `BUILTIN_STATE_PHRASES`。
+
+        ⭐ 没有「合并」而是「取第一组非空的」：让角色包作者能用一个文件
+        **整体替换**一组台词，而不是必须把内置的也一起重写一遍。
+
+        Same precedence as `phrases_for()`.  First non-empty group *wins*
+        rather than merging: a pack author replaces a set wholesale.
+        """
+        directory = getattr(bundle, "directory", None) if bundle is not None else None
+        if directory:
+            for folder in ("conf", "."):
+                path = os.path.join(directory, folder,
+                                    "serifu_%s.txt" % state)
+                if os.path.isfile(path):
+                    lines = self._read_lines(path)
+                    if lines:
+                        return lines
+        if self.settings is not None:
+            custom = self.settings.get("serifu_state_%s" % state, "") or ""
+            if isinstance(custom, str) and custom.strip():
+                out = [s.strip() for s in custom.splitlines() if s.strip()]
+                if out:
+                    return out
+        return list(BUILTIN_STATE_PHRASES.get(state, []))
+
     def enabled(self) -> bool:
         if self.settings is None:
             return False

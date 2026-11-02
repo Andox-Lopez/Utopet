@@ -87,6 +87,9 @@ docs/*
 # ignores the whole directory, so a new file there needs `git add -f`,
 # which is easy to forget.
 !docs/ROADMAP.md
+# ⭐ 1.2.0 功能规划同样是开发文档（F1~F6 的「做什么 / 复用什么 / 怎么验收」）。
+# 1.2.0 feature plan is a development document too.
+!docs/FEATURES_1.2.0.md
 #发布工具
 tools/release.py
 

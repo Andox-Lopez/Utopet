@@ -48,6 +48,13 @@
 
 ### 🐛 修复 Fixed
 
+- **气泡不再被无限续命、永不消失。** 当「自动冒泡间隔」小于或等于「气泡显示
+  秒数」时（例如间隔 1 秒、显示 5 秒），旧逻辑在气泡显示期间每秒又发一句，每发
+  一句就把消失定时器重置一次 —— 气泡于是一直钉在宠物头顶、跟着它走。现在气泡
+  **显示期间不再发下一句**，等它消失后间隔才重新计时。
+  **Balloons no longer stay forever.**  When the auto-pop interval was shorter
+  than the display duration, each new line reset the hide timer, so the balloon
+  never got to disappear.  A visible balloon no longer queues another line.
 - **日语界面里不再出现中文的状态标签。** 状态摘要以前是硬编码的中/英两分支，
   而 `ja_JP` 既不是 `"en"` 开头、也没有自己的分支 —— **日语用户看到的是中文的
   「心情 / 体力」**。现在标签统一走翻译表（`普通 気分 50 体力 70`）。

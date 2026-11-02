@@ -10,6 +10,64 @@
 
 ---
 
+## [1.2.0] — 2026-10-31
+
+**宠物的心情、体力、健康和好感度现在看得见了，摸它一下也会真的有反应。**
+**The pet's mood, stamina, health and rapport are now visible, and patting it actually does something.**
+
+### ✨ 新增 Added
+
+- **宠物状态面板：四个数值都看得见，每只宠物分别列出。**
+  以前任务栏面板上只有一行「开心 心情 85 体力 90」—— 健康和好感度**根本没显示**，
+  有多只宠物时还只能拿第一只当「代表」（面板只有 320px 宽，塞不下更多）。
+  现在**点一下那行摘要**就会弹出详细窗口：每只宠物一块，角色名 + 状态 +
+  四条数值进度条，一秒刷新一次。
+  **The status panel now shows all four numbers, one block per pet.**  The
+  320px panel could only fit a one-line summary (mood and stamina), and with
+  several pets only the first stood in for the rest.  Clicking the summary
+  opens a popover with every pet and all four values.
+- **互动细分：摸一下、拖着走、甩出去，给的东西不一样。**
+  以前这三种互动走的是同一条公式 —— `interact()` 里那行
+  `del kind` 就是明写的待办。现在分开了：
+  **The three interactions no longer share one formula** (that `del kind` was
+  an explicit to-do):
+  | 互动 | 心情 | 好感 | 体力 |
+  |---|---|---|---|
+  | 摸一下 / 点一下 | **+2.2** | +0.15 | 几乎不耗 |
+  | 拖着走 | +0.8 | **+0.45** | -1.6 |
+  | 甩出去 | +1.8 | +0.10 | **-2.4** |
+
+  ⭐ **最关键的一条：以前点击/摸头完全不算互动。** 用户点宠物是最自然的动作，
+  却得不到任何回应 —— 只有拖拽和抛出会计入。现在按松手时的位移判断：
+  没怎么动就是摸头，真拖着走了才算拖拽。
+  **Patting used to count as nothing at all.**  Only dragging and throwing
+  were recorded; a tap now registers as a pat.
+- **「被抛出」的行为没有变。** 松手后宠物照样会被甩出去 —— 这次只改了数值
+  按哪种互动结算，**没有动产品行为**。
+  The throw on release is unchanged; only which numbers it settles changed.
+
+### 🐛 修复 Fixed
+
+- **日语界面里不再出现中文的状态标签。** 状态摘要以前是硬编码的中/英两分支，
+  而 `ja_JP` 既不是 `"en"` 开头、也没有自己的分支 —— **日语用户看到的是中文的
+  「心情 / 体力」**。现在标签统一走翻译表（`普通 気分 50 体力 70`）。
+  **Japanese no longer falls through to Chinese labels.**  The summary was
+  hard-coded to two branches and `ja_JP` matched neither.
+- **宠物状态缺字段时不再让窗口崩溃。** 详细窗口改用 `.get()`：万一某个数值
+  取不到，缺的那项显示为 0 并在日志里记一笔，而不是直接崩掉。
+  A missing status field no longer crashes the status window.
+
+### 🔧 变更 Changed
+
+- **`PetStatus.detail()` 返回结构化的四个数值**（不是拼好的一行字符串）——
+  面板要自己排版、要列多只宠物，拼好的字符串没法复用。
+  `detail()` returns structured data rather than a pre-joined line.
+- **面板的状态摘要从只读标签换成了可点击按钮**（扁平样式，看起来仍像一行字）。
+  用按钮而不是给标签装事件过滤器：自带点击信号、键盘可达、有悬停反馈。
+  A flat button instead of an event-filtered label: click signal, keyboard
+  access and hover feedback for free.
+
+---
 ## [1.1.3] — 2026-10-29
 
 **原版「从墙上落下」这个行为从来没生效过，另有 12 处行为条件一直是死的。**

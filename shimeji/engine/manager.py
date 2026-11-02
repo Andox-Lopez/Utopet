@@ -1020,10 +1020,27 @@ class Manager(QObject):
         「粘着」不能省：宠物到处走，气泡留在原地看起来就是坏的。
         The follow is not optional: the pet walks around, and a balloon left
         behind reads as broken.
+
+        ⭐ **一句话显示期间绝不排下一句**（1.2.0 修）。
+        `say()` 会把消失定时器重置成 `serifu_seconds`。以前气泡可见时也照样
+        累计 interval、一到点又 say()，于是当「冒泡间隔 ≤ 显示时长」（比如
+        间隔 1 秒、显示 5 秒）时，气泡每秒被续命一次，**永远到不了消失那一刻**
+        —— 表现为气泡一直钉在宠物头顶、跟着它走。
+
+        现在分两种情况：
+        * **可见**：只 follow（跟着宠物），不累计、不冒泡。
+        * **不可见**（含还没建窗口）：累计间隔，到点才 say()。
+        语义是「说完一句，等它消失，再隔一会儿说下一句」。
         """
-        if self._balloon is None or not self._balloon.isVisible():
+        balloon = self._balloon
+        if balloon is not None and balloon.isVisible():
+            # 正在显示：只跟随，**绝不重新 say**（否则重置消失定时器＝续命）。
+            # Visible: follow only.  Never say again — that would reset the
+            # hide timer and keep an always-on-top balloon alive forever.
+            balloon.follow()
             return
-        self._balloon.follow()
+        # 不可见（或还没懒建）：累计「下一句」的间隔。
+        # Hidden (or not created yet): advance the gap toward the next line.
         interval = self.serifu.interval_ms()
         if interval <= 0:
             return

@@ -10,6 +10,32 @@
 
 ---
 
+## [1.2.1] — 2026-11-04
+
+**多屏用户终于能限制宠物活动范围了。**
+**Multi-screen users can now limit which displays their pets may roam.**
+
+### ✨ 新增 Added
+
+- **多显示器「允许/禁止」开关。** 设置页新增「显示器」标签页，勾选的屏上
+  宠物会出现；取消勾选后，现有的宠物会被拉回最近的允许屏。用设备名
+  （`\.\DISPLAY2`）做持久化 key —— 比矩形稳定，拔插/换接口不会错乱。
+  **Per-monitor allow/deny toggle.** A new Monitors tab lists every screen;
+  unchecked screens pull existing pets back to the nearest allowed one.
+  Device names (`.\.\DISPLAY2`) persist across unplug/replug.
+
+### 🐛 修复 Fixed
+
+- **日语界面里不再出现中文的状态标签。** F1 时修的，漏进了 1.2.0 正式版。
+  **Japanese no longer shows Chinese labels.** Fixed in F1, missed in 1.2.0 GA.
+
+### 🔧 变更 Changed
+
+- **版本号三处一致**：源码 / .iss / CHANGELOG 都升到 1.2.1。
+  **Version bumped to 1.2.1 across source, installer and changelog.**
+
+---
+
 ## [1.2.0] — 2026-11-04
 
 **宠物的心情、体力、健康和好感度现在看得见了，摸它一下也会真的有反应。**

@@ -10,13 +10,26 @@
 
 ---
 
-## [1.2.0] — 2026-10-31
+## [1.2.0] — 2026-11-04
 
 **宠物的心情、体力、健康和好感度现在看得见了，摸它一下也会真的有反应。**
 **The pet's mood, stamina, health and rapport are now visible, and patting it actually does something.**
 
 ### ✨ 新增 Added
 
+- **番茄钟联动：专注时段宠物会安静下来。** 番茄钟进入「工作中」时，跳跃/奔跑/
+  爬墙这类活跃行为的出现频率减半，坐/趴这类安静行为略增；休息与空闲时一切照旧。
+  和心情状态一样**只改频率、不改行为集合** —— 专注是「不打扰」，宠物不会消失
+  也不会不动。
+  **The pet quiets down during a Pomodoro focus phase.**  Active behaviours
+  (jumps, runs, climbs) show up half as often while working; quiet ones a bit
+  more.  Frequency only — the behaviour set never changes.
+- **自定义动作的表达式写错时，设置页当场提示。** 自定义 XML 里的 `#{}`/`${}`
+  表达式如果语法有错，以前是运行时静默失效 —— 动作没了，日志里一个字都没有。
+  现在加载时就在设置页 custom.xml 下方红字列出（哪个动作、哪个字段、什么原因）。
+  **Broken `#{}` expressions in custom actions are surfaced in the settings
+  page** (action, field, reason) instead of silently killing the action at
+  runtime.
 - **宠物状态面板：四个数值都看得见，每只宠物分别列出。**
   以前任务栏面板上只有一行「开心 心情 85 体力 90」—— 健康和好感度**根本没显示**，
   有多只宠物时还只能拿第一只当「代表」（面板只有 320px 宽，塞不下更多）。

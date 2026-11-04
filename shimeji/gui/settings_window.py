@@ -634,7 +634,12 @@ class SettingsWindow(QWidget):
         self.tabs.addTab(w, t.t("tab.behavior"))
         self._fill_behaviors()
 
-    # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 显示器 / monitors (1.2.0 F5)
+        # ------------------------------------------------------------------
+        self._tab_monitors()
+
+        # ------------------------------------------------------------------
     def _fill_behaviors(self):
         """列出所有行为及其权重 / List every behaviour with its weight."""
         t = self.t
@@ -1345,6 +1350,62 @@ class SettingsWindow(QWidget):
         log.warning("自定义动作有 %d 处表达式无法解析：%s",
                     len(problems),
                     "; ".join("%s/%s" % (n, f) for n, f, _ in problems[:8]))
+
+    # ------------------------------------------------------------------
+    # 显示器 / monitors (1.2.0 F5)
+    # ------------------------------------------------------------------
+    def _tab_monitors(self):
+        """
+        「允许/禁止宠物去某块屏」设置页。
+
+        用设备名（\\\\.\\DISPLAY2）做持久化 key：矩形会随拔插/换接口漂移，
+        设备名在同一个物理接口上稳定得多。
+        """
+        t = self.t
+        w, v = self._page()
+
+        g = self._group(t.t("grp.monitors", "显示器"))
+        hint = QLabel(t.t("hint.monitors",
+                         "勾选的屏上宠物会出现；取消勾选后，现有的宠物会被拉回最近的允许屏。"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 12px;")
+        g.layout().addRow(hint)
+
+        self.monitor_checks: list[tuple[str, QCheckBox]] = []
+        for info in self.manager.shared_env.monitor_info:
+            cb = QCheckBox()
+            # 默认允许（首次）
+            cb.setChecked(info.get("allowed", True))
+            label = info.get("device", "?")
+            if info.get("primary"):
+                label = t.t("lbl.monitor_primary", "{0}（主屏）").format(label)
+            cb.setText(label)
+            cb.toggled.connect(self._save_monitor_allow)
+            g.layout().addRow("", cb)
+            self.monitor_checks.append((info["device"], cb))
+
+        # 全部禁止时的警告
+        self.monitor_warn = QLabel("")
+        self.monitor_warn.setStyleSheet("color: #c0392b; font-size: 12px;")
+        g.layout().addRow(self.monitor_warn)
+        self._save_monitor_allow()   # 初始化状态
+
+    def _save_monitor_allow(self):
+        """把勾选状态写回 settings 和 environment。"""
+        allowed = []
+        for device, cb in self.monitor_checks:
+            if cb.isChecked():
+                allowed.append(device)
+        # 全部取消 -> 空集合 = 全部允许（不等于「全部禁止」）。
+        # 否则用户会不小心把宠物锁死在「没地方去」的状态。
+        if not allowed:
+            self.monitor_warn.setText(
+                self.t.t("hint.monitors_all",
+                         "（全部取消 = 全部允许；至少留一块屏给宠物）"))
+        else:
+            self.monitor_warn.setText("")
+        self.settings.set("monitor_allow", allowed)
+        self.manager._apply_env_options()
 
     # ------------------------------------------------------------------
     # 关于 / about

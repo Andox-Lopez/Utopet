@@ -292,6 +292,14 @@ class Manager(QObject):
         self.shared_env.titles_filter = list(self.settings.get("titles", []) or [])
         off = self.settings.get("window_offset", [0, 0, 0, 0]) or [0, 0, 0, 0]
         self.shared_env.window_offset = tuple(int(x) for x in (list(off) + [0, 0, 0, 0])[:4])
+        # 1.2.0 F5：允许/禁止宠物去某块屏。
+        # 用设备名（\\\\.\\DISPLAY2）做 key；空集合 = 全部允许。
+        raw = self.settings.get("monitor_allow")
+        if isinstance(raw, (list, tuple)):
+            allowed = set(str(x) for x in raw if x)
+        else:
+            allowed = set()
+        self.shared_env.set_allowed_devices(allowed)
 
     def _character_dir(self) -> str:
         name = self.settings.get("character", "")
@@ -653,6 +661,8 @@ class Manager(QObject):
         self.mascots.append(m)
         if not self.hidden:
             m.show()
+        # 1.2.0 F5：新宠物也可能落在禁屏上（如果主屏被禁）。
+        self._clamp_to_allowed(m)
         return m
 
     # ------------------------------------------------------------------
@@ -1111,6 +1121,45 @@ class Manager(QObject):
                 return
             m.action = None
         self._rescue_if_offscreen(m)
+        # 1.2.0 F5：禁屏上的宠物立刻拉回最近允许屏。
+        # 用整屏矩形（不是 work 区）判断，因为宠物可能在任务栏/任务栏上方。
+        # 拉回时锚点夹到允许屏的 work 区，不改变当前动作（不像 offscreen 会切
+        # 「落下する」—— 那是因为真丢了；这里只是「不许去」）。
+        self._clamp_to_allowed(m)
+
+    def _clamp_to_allowed(self, m: Mascot):
+        """
+        把禁屏上的宠物拉回最近允许屏（1.2.0 F5）/ Pull a mascot off a forbidden
+        monitor back to the nearest allowed one.
+
+        ⭐ 不切动作、不改行为：只是夹坐标。用户看到的是「宠物没跑到那块屏上」，
+        不是「宠物被弹回来做了一个新动作」。
+        """
+        info = self.shared_env.monitor_at(m.anchor.x, m.anchor.y)
+        if info is None or info.get("allowed", True):
+            return
+        # 找最近允许屏的 work 区
+        allowed = [i for i, inf in enumerate(self.shared_env.monitor_info)
+                   if inf.get("allowed", True)]
+        if not allowed:
+            return  # 全禁了 -> 不动（否则没地方去）
+        best, bestd = None, None
+        for i in allowed:
+            inf = self.shared_env.monitor_info[i]
+            cx = max(inf["monitor"][0], min(inf["monitor"][2], m.anchor.x))
+            cy = max(inf["monitor"][1], min(inf["monitor"][3], m.anchor.y))
+            d = (cx - m.anchor.x) ** 2 + (cy - m.anchor.y) ** 2
+            if bestd is None or d < bestd:
+                best, bestd = inf, d
+        if best is None:
+            return
+        w = best["work"]
+        x = max(w[0], min(w[2] - 1, m.anchor.x))
+        y = max(w[1], min(w[3] - 1, m.anchor.y))
+        # 用 win32.move_window_at 让窗口真的挪过去（返回实际落点）
+        from ..win32 import move_window_at
+        actual = move_window_at(m._win, x, y)
+        m.anchor = Pt(actual.x, actual.y)
 
     def _resume_frames(self, m: Mascot, name: str) -> tuple[int, int, int]:
         """

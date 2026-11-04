@@ -392,6 +392,18 @@ class Environment:
         self.cursor = Location()
         self.windows: list[Area] = []
         self.monitors: list[tuple[Area, Area]] = []   # (整屏, 工作区) / (full, work)
+        #: 1.2.0 F5：带设备名 + 允许状态的屏幕信息。
+        #:
+        # [{"device": "\\\\.\\DISPLAY1", "monitor": (l,t,r,b), "work": (l,t,r,b),
+        #  "primary": bool, "allowed": bool}, ...]
+        #
+        # ⭐ 用设备名（\\\\.\\DISPLAY2）而不是矩形做持久化 key：矩形会随拔插/换
+        # 接口/改分辨率漂移，设备名在同一个物理接口上稳定得多。
+        #
+        # allowed 由 Manager 设置（读 settings 的 monitor_allow 表）。
+        self.monitor_info: list[dict] = []
+        #: 允许的设备名集合（快查）/ allowed device names for fast lookup.
+        self._allowed_devices: set[str] = set()
         self._window_map: dict[int, Area] = {}
         self._titles: dict[int, str] = {}
         #: 被完全遮盖的窗口 hwnd 集合（每轮枚举后重算）/ fully covered hwnds
@@ -405,11 +417,24 @@ class Environment:
     def _enum_monitors(self):
         """枚举显示器，选出主屏工作区 / Enumerate monitors and pick the primary work area."""
         self.monitors = []
+        self.monitor_info = []
         for mrect, wrect in win32.enum_monitors():
             self.monitors.append((Area(*mrect, visible=True), Area(*wrect, visible=True)))
         if not self.monitors:
             self.monitors.append((Area(*win32.get_screen_rect(), visible=True),
                                   Area(*win32.get_work_area(), visible=True)))
+        # 1.2.0 F5：加设备名（持久化 key）
+        ex = win32.enum_monitors_ex()
+        # 按 monitor 矩形对齐 ex 与旧接口（数量应一致，但防御性 merge）
+        for i, (m, w) in enumerate(self.monitors):
+            info = ex[i] if i < len(ex) else {}
+            self.monitor_info.append({
+                "device": info.get("device", ""),
+                "monitor": (m.left, m.top, m.right, m.bottom),
+                "work": (w.left, w.top, w.right, w.bottom),
+                "primary": info.get("primary", False),
+                "allowed": True,   # 默认允许；Manager 会用 settings 覆盖
+            })
         # 主屏 = 含有 (0,0) 的那一块 / primary = the one containing (0, 0)
         primary = None
         for m, w in self.monitors:
@@ -436,6 +461,33 @@ class Environment:
             if bestd is None or d < bestd:
                 best, bestd = w, d
         return best or self.work_area
+
+    def monitor_at(self, x, y) -> dict | None:
+        """
+        坐标所在的屏幕信息（1.2.0 F5）/ The monitor info for a point.
+
+        返回 monitor_info 里的 dict（含 device/allowed），没有则返回 None。
+        用 monitor 整屏矩形判断，不是 work 区。
+        """
+        for info in self.monitor_info:
+            lx, ly, rx, ry = info["monitor"]
+            if lx <= x <= rx and ly <= y <= ry:
+                return info
+        return None
+
+    def set_allowed_devices(self, allowed: set[str]):
+        """
+        更新允许的屏幕集合（1.2.0 F5）/ Update the allowed-monitor set.
+
+        ⭐ 用设备名做 key。不在集合里的屏 -> allowed=False。
+        空集合 = 全部允许（不等于「全部禁止」）。
+        """
+        self._allowed_devices = allowed
+        for info in self.monitor_info:
+            if allowed:
+                info["allowed"] = info["device"] in allowed
+            else:
+                info["allowed"] = True
 
     # 表达式里写作 `mascot.environment.workArea` / `activeIE`，这里提供同名别名
     # Expressions use `workArea` / `activeIE`; provide identically named aliases.

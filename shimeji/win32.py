@@ -230,12 +230,30 @@ class MONITORINFO(ctypes.Structure):
                 ("dwFlags", wintypes.DWORD)]
 
 
+class MONITORINFOEXW(ctypes.Structure):
+    """带设备名的 MONITORINFO（1.2.0 F5）/ MONITORINFO plus the device name."""
+    _fields_ = [("cbSize", wintypes.DWORD),
+                ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT),
+                ("dwFlags", wintypes.DWORD),
+                ("szDevice", ctypes.c_wchar * 32)]
+
+
 _MONITORENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.c_ulong, ctypes.c_ulong,
                                       ctypes.POINTER(wintypes.RECT), ctypes.c_long)
 _user32.EnumDisplayMonitors.argtypes = [wintypes.HMONITOR, wintypes.HDC,
                                         _MONITORENUMPROC, ctypes.c_long]
 _user32.EnumDisplayMonitors.restype = wintypes.BOOL
-_user32.GetMonitorInfoW.argtypes = [ctypes.c_ulong, ctypes.POINTER(MONITORINFO)]
+# ⭐ F5：GetMonitorInfoW 既要收 MONITORINFO（旧 enum_monitors）也要收
+# MONITORINFOEXW（新的 enum_monitors_ex，带设备名）。argtypes 写死成其中
+# 一种会让另一种在回调里抛 TypeError（ctypes 回调里抛异常会被吞，只剩
+# stderr 一行 —— 典型的「静默失效」）。两个结构的前四个字段完全一致，
+# EXW 只是多了 szDevice，所以这里声明成通用的 c_void_p，由调用方保证
+# cbSize 正确。
+# Both MONITORINFO and MONITORINFOEXW are passed here; pinning argtypes to
+# either one rejects the other *silently* (exceptions in ctypes callbacks are
+# swallowed).  Use a generic pointer and set cbSize correctly at each call.
+_user32.GetMonitorInfoW.argtypes = [ctypes.c_ulong, ctypes.c_void_p]
 _user32.GetMonitorInfoW.restype = wintypes.BOOL
 _user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
 _user32.MonitorFromPoint.restype = ctypes.c_ulong
@@ -341,6 +359,51 @@ def enum_monitors() -> list[tuple[tuple[int, int, int, int], tuple[int, int, int
         pass
     if not out:
         out.append(((0, 0) + get_screen_rect()[2:], get_work_area()))
+    return out
+
+
+def enum_monitors_ex() -> list[dict]:
+    """
+    枚举显示器，连**设备名**一起返回（1.2.0 F5）/ Enumerate monitors with device names.
+
+    返回 [{"device": "\\\\.\\DISPLAY1", "monitor": (l,t,r,b), "work": (l,t,r,b),
+    "primary": bool}, ...]
+
+    设备名是「允许/禁止宠物去某块屏」的**持久化 key**：矩形会随拔插/换接口/
+    改分辨率漂移，设备名（\\\\.\\DISPLAY2 这种）在同一个物理接口上稳定得多。
+    ⭐ Windows 不保证设备名跨重启绝对不变（换接口会变），但比矩形可靠一个
+    量级；对不上的名字按「未配置」处理（见 environment 的合并逻辑），
+    不会出现「配置把宠物锁死在已拔掉的屏上」。
+
+    Returns dicts with a stable-ish device name for persistence; an unmatched
+    name simply means "not configured" rather than a hard lock-out.
+    """
+    out = []
+
+    def _cb(hmon, _hdc, _rect, _lparam):
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(MONITORINFOEXW)
+        if _user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+            out.append({
+                "device": info.szDevice or "",
+                "monitor": (_l(info.rcMonitor.left), _l(info.rcMonitor.top),
+                            _l(info.rcMonitor.right), _l(info.rcMonitor.bottom)),
+                "work": (_l(info.rcWork.left), _l(info.rcWork.top),
+                         _l(info.rcWork.right), _l(info.rcWork.bottom)),
+                # MONITORINFOF_PRIMARY = 1 / the primary-monitor flag
+                "primary": bool(info.dwFlags & 1),
+            })
+        return True
+
+    try:
+        _user32.EnumDisplayMonitors(None, None, _MONITORENUMPROC(_cb), 0)
+    except OSError:
+        pass
+    if not out:
+        out.append({"device": "\\\\.\\DISPLAY1",
+                    "monitor": get_screen_rect(),
+                    "work": get_work_area(),
+                    "primary": True})
     return out
 
 

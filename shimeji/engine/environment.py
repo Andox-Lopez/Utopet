@@ -434,6 +434,9 @@ class Environment:
                 "work": (w.left, w.top, w.right, w.bottom),
                 "primary": info.get("primary", False),
                 "allowed": True,   # 默认允许；Manager 会用 settings 覆盖
+                # 1.2.0 F5 P1：每屏独立数量/缩放。None = 继承全局。
+                "max_count": None,
+                "scale": None,
             })
         # 主屏 = 含有 (0,0) 的那一块 / primary = the one containing (0, 0)
         primary = None
@@ -488,6 +491,50 @@ class Environment:
                 info["allowed"] = info["device"] in allowed
             else:
                 info["allowed"] = True
+
+    def monitor_max_count(self, device: str, global_max: int) -> int:
+        """
+        某屏的数量上限（1.2.0 F5 P1）/ Per-monitor max count.
+
+        该屏配置了 max_count -> 用它；否则继承全局 max。
+        """
+        for info in self.monitor_info:
+            if info["device"] == device:
+                v = info.get("max_count")
+                return v if v is not None else global_max
+        return global_max
+
+    def monitor_scale(self, device: str, global_scale: float) -> float:
+        """
+        某屏的缩放（1.2.0 F5 P1）/ Per-monitor scale.
+
+        该屏配置了 scale -> 用它；否则继承全局 scale。
+        """
+        for info in self.monitor_info:
+            if info["device"] == device:
+                v = info.get("scale")
+                return v if v is not None else global_scale
+        return global_scale
+
+    def apply_monitor_settings(self, monitor_settings: dict | None):
+        """
+        从 settings 读每屏配置（1.2.0 F5 P1）/ Apply per-monitor settings.
+
+        `monitor_settings` 是 `{设备名: {"max_count": int, "scale": float}, ...}`。
+        缺失的键 = 继承全局（None）。
+        None 或空字典 = 清除所有屏上配置，全部继承全局。
+        """
+        for info in self.monitor_info:
+            info["max_count"] = None
+            info["scale"] = None
+        if not monitor_settings:
+            return
+        for info in self.monitor_info:
+            dev = info["device"]
+            if dev in monitor_settings:
+                cfg = monitor_settings[dev]
+                info["max_count"] = cfg.get("max_count")
+                info["scale"] = cfg.get("scale")
 
     # 表达式里写作 `mascot.environment.workArea` / `activeIE`，这里提供同名别名
     # Expressions use `workArea` / `activeIE`; provide identically named aliases.

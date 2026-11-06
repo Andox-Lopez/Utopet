@@ -79,6 +79,21 @@ def main() -> int:
     check(ok, "没闭合的 #{ 当成普通文本，不误报")
 
     # ==================================================================
+    section("2b. runtime=True：纯常量表达式做试算（1.3 P4）")
+    ok, why = check_expression("#{1 / 0}", runtime=True)
+    check(not ok, "1/0 在运行时试算中被识别", why)
+    ok, why = check_expression("#{Math.floor()}", runtime=True)
+    check(not ok, "Math.floor() 缺参在运行时试算中被识别", why)
+    ok, _ = check_expression("#{1 + 2 * 3}", runtime=True)
+    check(ok, "纯常量表达式试算通过")
+    ok, _ = check_expression("#{Math.floor(2.6)}", runtime=True)
+    check(ok, "合法 Math.floor 试算通过")
+    ok, _ = check_expression("#{workArea.bottom - 64}", runtime=True)
+    check(ok, "依赖 workArea 的表达式不做运行时试算（避免误报）")
+    ok, _ = check_expression("#{mouseX + 10}", runtime=True)
+    check(ok, "依赖 mouseX 的表达式不做运行时试算")
+
+    # ==================================================================
     section("3. CustomConfig.validate_expressions：扫描一份配置")
     d = tempfile.mkdtemp(prefix="utopet_expr_")
     try:

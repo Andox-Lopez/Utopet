@@ -2100,7 +2100,7 @@ def main() -> int:
         _w14.show()
         app.processEvents()
         _titles = [_w14.tabs.tabText(i) for i in range(_w14.tabs.count())]
-        check(_w14.tabs.count() == 8, "设置窗口共 8 页", str(_titles))
+        check(_w14.tabs.count() >= 8, "设置窗口页数不减少（允许新增页）", str(_titles))
         check("角色" in _titles, "存在「角色」页", str(_titles))
 
         if "角色" in _titles:
@@ -2132,7 +2132,7 @@ def main() -> int:
         _t2 = [_w14.tabs.tabText(i) for i in range(_w14.tabs.count())]
         check(_i14 >= 0 and "Characters" in _t2,
               "切到 en_US 后页签标题正确", str(_t2))
-        check(_w14.tabs.count() == 8, "切语言后仍是 8 页", str(_t2))
+        check(len(_t2) == len(_titles), "切语言后页数不变", str(_t2))
         _w14.close()
         _m14._settings_window = None
         from shimeji.i18n import set_language as _sl

@@ -35,7 +35,7 @@ from ..xml.config import (ActionSet, BehaviorSet, find_conf,
 from .brain import Brain
 from .avoid import (DEFAULT_MARGIN_X, DEFAULT_MARGIN_Y,
                     DEFAULT_TYPING_WINDOW_MS, AvoidZones)
-from .environment import Environment, Pt
+from .environment import Environment, Pt, Area
 from .mascot import CharacterBundle, ImageSet, Mascot
 from .runtime import create_action
 
@@ -300,6 +300,11 @@ class Manager(QObject):
         else:
             allowed = set()
         self.shared_env.set_allowed_devices(allowed)
+        # 1.2.0 F5 P1：每屏独立数量/缩放。
+        # None = 继承全局；UI 里用 spinbox 写回。
+        ms = self.settings.get("monitor_settings")
+        if isinstance(ms, dict):
+            self.shared_env.apply_monitor_settings(ms)
 
     def _character_dir(self) -> str:
         name = self.settings.get("character", "")
@@ -663,6 +668,10 @@ class Manager(QObject):
             m.show()
         # 1.2.0 F5：新宠物也可能落在禁屏上（如果主屏被禁）。
         self._clamp_to_allowed(m)
+        # 1.2.0 F5 P1：按屏缩放（走统一 helper，记下设备，避免下一帧重复设置）。
+        info = self.shared_env.monitor_at(m.anchor.x, m.anchor.y)
+        if info is not None:
+            self._apply_scale_for_monitor(m, info["device"])
         return m
 
     # ------------------------------------------------------------------
@@ -719,6 +728,8 @@ class Manager(QObject):
                                 behavior=behavior)
                 if m is not None:
                     restored += 1
+                    # 1.3 P3：先恢复养成数值，再决定下一步行为；恢复本身不冒台词。
+                    m.status.from_snapshot(item.get("status", {}))
                     # 续播：把上次跑到的帧数交给第一个动作补上
                     # resume: hand the saved frame count to the first action
                     if behavior:
@@ -766,6 +777,10 @@ class Manager(QObject):
         for m in self.mascots:
             item = {"x": round(m.anchor.x, 1), "y": round(m.anchor.y, 1),
                     "look_right": bool(m.look_right),
+                    # 1.3 P3：四个养成数值 + 已报过的里程碑随会话一起保存。
+                    # Without this, a restart wipes rapport to zero, so
+                    # persisting milestones alone would make no sense.
+                    "status": m.status.to_snapshot(),
                     # 多角色模式记下角色名，下次启动才能恢复成不同的角色
                     # record the character so a restart brings back the mix
                     "character": (m.bundle.label if m.bundle
@@ -822,18 +837,14 @@ class Manager(QObject):
         """
         一次召唤多只 / Summon several mascots at once.
 
-        `label` 指定这批都用哪个角色（多角色模式生效；不给就用默认角色）——
-        面板上的角色下拉框 + 数量框走的就是这条路。
-        `label` picks the character for this batch (multi-character mode only),
-        which is what the panel's character drop-down plus count box drive.
+        `label` picks the character for this batch (multi-character mode only,
+        which is what the panel's character drop-down plus count box drive).
 
-        开启「均匀铺开」时，落点按 n 等分横向铺在工作区里（带随机抖动），
-        比纯随机更不容易叠在一起；到达数量上限时提前收尾，返回实际召唤数。
-
-        With "spread" enabled the landing points are evenly divided across the
-        work area (with jitter) so they do not pile up as often as pure random
-        placement would.  Stops at the count limit and returns how many were
-        actually summoned.
+        1.2.0 F5 P1：按屏分配 —— 先挑一个「还没满」的允许屏，把落点夹到
+        那屏的 work 区。如果所有允许屏都满了，提前收尾。
+        With per-monitor max counts, pick an allowed screen that is not yet
+        full; clamp the landing point to that screen's work area.  Stops early
+        if all allowed screens are full.
         """
         added = 0
         try:
@@ -842,24 +853,50 @@ class Manager(QObject):
             return 0
         if count <= 0 or self.images is None or not self.images.images:
             return 0
-        wa = self.shared_env.work_area
-        left, right = wa.left, wa.right
-        span = max(1, right - left - 160)
+        global_max = int(self.settings.get("max_count", 50))
         spread = bool(self.settings.get("spawn_spread", True))
+
+        def pets_on_monitor(device: str) -> int:
+            n = 0
+            for m in self.mascots:
+                info = self.shared_env.monitor_at(m.anchor.x, m.anchor.y)
+                if info is not None and info["device"] == device:
+                    n += 1
+            return n
+
+        def pick_monitor():
+            """挑一个「还没满」的允许屏，返回 (Area, device) 或 None。"""
+            for info in self.shared_env.monitor_info:
+                if not info.get("allowed", True):
+                    continue
+                dev = info["device"]
+                limit = self.shared_env.monitor_max_count(dev, global_max)
+                if pets_on_monitor(dev) < limit:
+                    w = info["work"]
+                    return Area(w[0], w[1], w[2], w[3], True), dev
+            # 所有允许屏都满了 -> 不再召唤（每屏上限必须真的生效）。
+            # No fallback: if every allowed monitor is full, the per-screen
+            # limit is a real limit, not a suggestion.
+            return None
+
         for i in range(count):
+            pick = pick_monitor()
+            if pick is None:
+                break
+            wa_area, dev = pick
+            left, right = wa_area.left, wa_area.right
+            span = max(1, right - left - 160)
             if spread:
-                # 在自己那格的中间 70% 里抖动，既整齐又不会相邻叠住
-                # jitter inside the middle 70% of its own slot: ordered but not stacked
                 frac = (i + 0.15 + 0.7 * random.random()) / float(count)
                 x = left + 80 + span * frac
             else:
-                x = random.randint(left + 80, max(left + 81, right - 80))
-            if self.summon(Pt(x, wa.bottom), behavior=behavior,
-                           label=label) is None:
+                x = random.randint(int(left) + 80, int(right) - 80)
+            anchor = Pt(int(x), wa_area.bottom)
+            m = self.summon(anchor, label=label)
+            if m is None:
                 break
             added += 1
         return added
-
     def dismiss_to(self, count: int) -> int:
         """只留下 n 只，其余解散 / Keep only `count` mascots, dismiss the rest."""
         removed = 0
@@ -1136,7 +1173,11 @@ class Manager(QObject):
         不是「宠物被弹回来做了一个新动作」。
         """
         info = self.shared_env.monitor_at(m.anchor.x, m.anchor.y)
-        if info is None or info.get("allowed", True):
+        if info is None:
+            return
+        if info.get("allowed", True):
+            # P2：允许屏之间自由跨；跨到新屏时自动切换该屏 scale。
+            self._apply_scale_for_monitor(m, info["device"])
             return
         # 找最近允许屏的 work 区
         allowed = [i for i, inf in enumerate(self.shared_env.monitor_info)
@@ -1156,10 +1197,32 @@ class Manager(QObject):
         w = best["work"]
         x = max(w[0], min(w[2] - 1, m.anchor.x))
         y = max(w[1], min(w[3] - 1, m.anchor.y))
-        # 用 win32.move_window_at 让窗口真的挪过去（返回实际落点）
-        from ..win32 import move_window_at
-        actual = move_window_at(m._win, x, y)
-        m.anchor = Pt(actual.x, actual.y)
+        # ⭐ 锚点是「脚底」，不是窗口左上角。直接把 (x,y) 喂给
+        # win32.move_window_at 会把它当左上角、导致宠物整只跳走。
+        # Mascot.reposition() 已经把锚点换算成窗口坐标。
+        m.anchor = Pt(x, y)
+        m.reposition()
+        # 拉回后按目标屏的 scale 显示。
+        self._apply_scale_for_monitor(m, best["device"])
+
+    def _apply_scale_for_monitor(self, m: Mascot, device: str):
+        """
+        跨屏后按目标屏独立缩放（1.3 P2）/ Apply the destination screen's scale.
+
+        ⭐ **只在跨到新屏时切换**：记录上一次应用缩放的设备名，设备没变就
+        `return`。否则每帧都用该屏 scale 覆盖，会把用户/其它逻辑（测试、
+        外观调节）刚设的 scale 立刻改回去。
+
+        允许屏之间自由跨；进入禁屏拉回。这一层只管**视觉缩放**，不碰行为、
+        不碰数量配额。
+        """
+        if getattr(m, "_scale_monitor", None) == device:
+            return
+        m._scale_monitor = device
+        global_scale = float(self.settings.get("scale", 1.0))
+        target_scale = self.shared_env.monitor_scale(device, global_scale)
+        if target_scale != m.scale:
+            m.set_scale(target_scale)
 
     def _resume_frames(self, m: Mascot, name: str) -> tuple[int, int, int]:
         """

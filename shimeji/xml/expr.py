@@ -21,6 +21,7 @@ those expressions into Python and evaluates them.
 
 from __future__ import annotations
 
+import ast
 import logging
 import math
 import random
@@ -269,7 +270,7 @@ class Expr:
         return "Expr(%r, dynamic=%s)" % (self.raw, self.dynamic)
 
 
-def check_expression(raw: str | None) -> tuple[bool, str]:
+def check_expression(raw: str | None, runtime: bool = False) -> tuple[bool, str]:
     """
     给**编辑器**用的实时校验 / Live validation for the action editor.
 
@@ -281,12 +282,10 @@ def check_expression(raw: str | None) -> tuple[bool, str]:
     * 是表达式且能编译 -> `(True, "")`
     * 是表达式但编译失败 -> `(False, 原因)`
 
-    只做**编译期**检查（语法对不对），不做求值 —— 求值需要真实的宠物/环境
-    命名空间，编辑器里没有，也不该有。像 `#{floor()}` 这种能编译但运行时才因
-    缺参数出错的，编译期不报（也没法报）。
-
-    Compile-time only: evaluation needs a live mascot/environment namespace the
-    editor does not have.
+    `runtime=True`（1.3 P4）时，额外对**不依赖宠物/环境变量**的纯常量表达式做
+    一次试算，能抓到编译通过但运行时必炸的错误（如 `1/0`、`Math.floor()` 缺参）。
+    ⭐ 含环境变量（workArea / mascot / mouseX…）的表达式**不试算**：假命名空间
+    必然误报，编辑器没有也不该有真实宠物环境。
     """
     if raw is None:
         return True, ""
@@ -299,6 +298,43 @@ def check_expression(raw: str | None) -> tuple[bool, str]:
         return True, ""
     if expr.code is None:
         return False, "表达式无法解析（语法错误或含有不支持的写法）：%s" % expr.raw
+    if runtime:
+        return _runtime_check(expr)
+    return True, ""
+
+
+#: 运行时试算允许出现的名字（内置函数/常量）；出现其它 Name 就跳过试算。
+#: Pure-expression names only; an environment Name means we cannot safely test it.
+_SAFE_NAMES = set(_GLOBALS) | {
+    "True", "False", "None",
+    # 翻译器支持但未全量注入 _GLOBALS 的函数名：
+    "floor", "ceil", "sqrt", "pow",
+}
+
+
+def _runtime_check(expr: "Expr") -> tuple[bool, str]:
+    """对纯常量表达式做一次试算；依赖环境变量则跳过（1.3 P4）。"""
+    try:
+        tree = compile(_to_python(expr.raw), "<check>", "eval", ast.PyCF_ONLY_AST)
+    except SyntaxError:
+        return True, ""  # 编译期检查已在上游处理
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id not in _SAFE_NAMES:
+            return True, ""  # 依赖真实环境变量，编辑器不做运行时试算
+    # 用允许的 floor/ceil/sqrt/pow 做兜底试算命名空间。
+    ns = dict(_GLOBALS)
+    ns.update({
+        "floor": math.floor,
+        "ceil": math.ceil,
+        "sqrt": math.sqrt,
+        "pow": math.pow,
+    })
+    try:
+        eval(expr.code, ns, {})
+    except Exception as exc:
+        # 不是静默吞掉：错误信息会原样返回给设置页红字提示，用户立刻可见。
+        # This is observable: the message is returned for the settings UI.
+        return False, "表达式运行时会失败：%s（%s）" % (expr.raw, exc)
     return True, ""
 
 

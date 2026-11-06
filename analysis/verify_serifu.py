@@ -258,7 +258,7 @@ def test_library(app):
         mgr.dismiss_all()
         w = SettingsWindow(mgr)
         titles = [w.tabs.tabText(i) for i in range(w.tabs.count())]
-        check(w.tabs.count() == 8, "设置仍是 8 页", str(titles))
+        check(w.tabs.count() >= 8, "设置页数不减少（允许新增页）", str(titles))
         check(w.t.t("tab.serifu") in titles, "气泡台词**独立成页**", str(titles))
         # 台词组必须**从「高级」页搬走了**，而不是在两处各建一份
         # （同一个 self.xxx 建两次 = 本项目吃过的两个大亏）

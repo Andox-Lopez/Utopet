@@ -1332,7 +1332,7 @@ class SettingsWindow(QWidget):
         if label is None:
             return
         try:
-            problems = self.custom.validate_expressions()
+            problems = self.custom.validate_expressions(runtime=True)
         except Exception:
             log.warning("校验自定义表达式失败", exc_info=True)
             label.setText("")
@@ -1371,7 +1371,7 @@ class SettingsWindow(QWidget):
         hint.setStyleSheet("color: palette(mid); font-size: 12px;")
         g.layout().addRow(hint)
 
-        self.monitor_checks: list[tuple[str, QCheckBox]] = []
+        self.monitor_checks: list[tuple[str, QCheckBox, QSpinBox, QSpinBox]] = []
         for info in self.manager.shared_env.monitor_info:
             cb = QCheckBox()
             # 默认允许（首次）
@@ -1382,20 +1382,57 @@ class SettingsWindow(QWidget):
             cb.setText(label)
             cb.toggled.connect(self._save_monitor_allow)
             g.layout().addRow("", cb)
-            self.monitor_checks.append((info["device"], cb))
+
+            # 1.2.0 F5 P1：每屏独立数量/缩放。None = 继承全局。
+            sub_widget = QWidget()
+            sub = QHBoxLayout(sub_widget)
+            sub.setSpacing(8)
+            max_sp = QSpinBox()
+            max_sp.setRange(0, 500)
+            max_sp.setSpecialValueText(t.t("val.inherit", "继承"))
+            max_cfg = info.get("max_count")
+            if max_cfg is not None:
+                max_sp.setValue(int(max_cfg))
+            else:
+                max_sp.setValue(0)  # 0 = 继承
+            max_sp.valueChanged.connect(self._save_monitor_settings)
+            sub.addWidget(QLabel(t.t("lbl.max_count", "数量")))
+            sub.addWidget(max_sp)
+
+            scale_sp = QDoubleSpinBox()
+            scale_sp.setRange(0.0, 3.0)
+            scale_sp.setSingleStep(0.1)
+            scale_sp.setSpecialValueText(t.t("val.inherit", "继承"))
+            scale_sp.setDecimals(1)
+            scale_cfg = info.get("scale")
+            if scale_cfg is not None:
+                scale_sp.setValue(float(scale_cfg))
+            else:
+                scale_sp.setValue(0.0)  # 0.0 = 继承
+            scale_sp.valueChanged.connect(self._save_monitor_settings)
+            sub.addWidget(QLabel(t.t("lbl.scale", "缩放")))
+            sub.addWidget(scale_sp)
+            sub.addStretch(1)
+            g.layout().addRow("", sub_widget)
+
+            self.monitor_checks.append((info["device"], cb, max_sp, scale_sp))
 
         # 全部禁止时的警告
         self.monitor_warn = QLabel("")
         self.monitor_warn.setStyleSheet("color: #c0392b; font-size: 12px;")
         g.layout().addRow(self.monitor_warn)
+        v.addWidget(g)
+        v.addStretch(1)
+        self.tabs.addTab(w, t.t("tab.monitors", "显示器"))
         self._save_monitor_allow()   # 初始化状态
 
     def _save_monitor_allow(self):
         """把勾选状态写回 settings 和 environment。"""
         allowed = []
-        for device, cb in self.monitor_checks:
+        for item in self.monitor_checks:
+            cb = item[1]
             if cb.isChecked():
-                allowed.append(device)
+                allowed.append(item[0])
         # 全部取消 -> 空集合 = 全部允许（不等于「全部禁止」）。
         # 否则用户会不小心把宠物锁死在「没地方去」的状态。
         if not allowed:
@@ -1405,6 +1442,24 @@ class SettingsWindow(QWidget):
         else:
             self.monitor_warn.setText("")
         self.settings.set("monitor_allow", allowed)
+        self._save_monitor_settings()   # 同步数量/缩放
+        self.manager._apply_env_options()
+
+    def _save_monitor_settings(self):
+        """把每屏数量/缩放写回 settings 和 environment（1.2.0 F5 P1）。"""
+        monitor_settings = {}
+        for item in self.monitor_checks:
+            dev, cb, max_sp, scale_sp = item
+            cfg = {}
+            max_v = max_sp.value()
+            if max_v > 0:
+                cfg["max_count"] = int(max_v)
+            scale_v = scale_sp.value()
+            if scale_v > 0.0:
+                cfg["scale"] = float(scale_v)
+            if cfg:
+                monitor_settings[dev] = cfg
+        self.settings.set("monitor_settings", monitor_settings)
         self.manager._apply_env_options()
 
     # ------------------------------------------------------------------

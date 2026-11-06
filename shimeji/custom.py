@@ -132,19 +132,20 @@ class CustomConfig:
     def remove(self, name: str):
         self.actions = [a for a in self.actions if a["name"] != name]
 
-    def validate_expressions(self) -> list[tuple[str, str, str]]:
+    def validate_expressions(self, runtime: bool = False) -> list[tuple[str, str, str]]:
         """
         扫描所有动作字段里的 `#{}`/`${}` 表达式，返回编译失败的清单。
 
-        1.2.0 F6。自定义动作的数值字段（移动速度 / 长度 / 目的地…）都允许写
+        1.2.0 F6：自定义动作的数值字段（移动速度 / 长度 / 目的地…）都允许写
         表达式；写错了以前是**运行时静默退化**（`Expr.code is None` ->
         「永远失败」），用户只看到动作没了，不知道为什么。这里把错误在
         **加载阶段**就摆到台面上。
 
-        返回 `[(动作名, 字段, 原因), ...]`；空列表 = 全合法（或没有表达式）。
+        `runtime=True`（1.3 P4）还会试算纯常量表达式，抓 `1/0`、`Math.floor()`
+        缺参这类编译通过但运行时必炸的错误；依赖宠物/环境变量的表达式不会试算，
+        避免误报。
 
-        Returns `(action name, field, reason)` tuples for every expression that
-        fails to compile; an empty list means all good.
+        返回 `[(动作名, 字段, 原因), ...]`；空列表 = 全合法（或没有表达式）。
         """
         from .xml.expr import check_expression
 
@@ -153,7 +154,7 @@ class CustomConfig:
             name = a.get("name", "?")
             for p in a.get("poses", []):
                 for field in ("base", "velocity", "duration"):
-                    ok, why = check_expression(p.get(field))
+                    ok, why = check_expression(p.get(field), runtime=runtime)
                     if not ok:
                         problems.append((name, field, why))
         return problems

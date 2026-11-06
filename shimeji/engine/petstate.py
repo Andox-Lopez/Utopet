@@ -144,6 +144,34 @@ class PetStatus:
         self._milestones_done: set = set()
         self._ticks = 0
 
+    def to_snapshot(self) -> dict:
+        """把养成数值和已说过的里程碑存进会话快照（1.3 P3）。"""
+        return {
+            "feeling": round(self.feeling, 2),
+            "energy": round(self.energy, 2),
+            "health": round(self.health, 2),
+            "likability": round(self.likability, 2),
+            "milestones_done": sorted(self._milestones_done),
+        }
+
+    def from_snapshot(self, snap: dict) -> None:
+        """从会话快照恢复养成状态（1.3 P3）；旧快照缺字段时保持默认值。"""
+        if not isinstance(snap, dict):
+            return
+        for key in ("feeling", "energy", "health", "likability"):
+            if key in snap:
+                try:
+                    setattr(self, key, float(snap[key]))
+                except (TypeError, ValueError):
+                    pass
+        self.clamp()
+        raw = snap.get("milestones_done", [])
+        if isinstance(raw, (list, tuple, set)):
+            self._milestones_done = {int(x) for x in raw if x in (50, 80, 100)}
+        # ⭐ 别在恢复时触发 on_state_changed / on_milestone 回调：
+        # 恢复不是「用户刚养成」，不能开机刷台词。
+        self._state = self.state()
+
     # ------------------------------------------------------------------
     def clamp(self) -> None:
         """把所有数值夹进合法区间 / Clamp every value into range."""

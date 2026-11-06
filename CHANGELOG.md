@@ -10,6 +10,44 @@
 
 ---
 
+## [1.3.0] — 2026-11-06
+
+**多屏可以单独配置，养成进度重启不丢，写错表达式更早被发现。**
+**Per-monitor limits and scaling, persisted pet stats, and earlier expression errors.**
+
+### ✨ 新增 Added
+
+- **多显示器：每块屏独立的数量上限和缩放。** 设置 → 显示器，每块屏可单独设
+  「数量上限 / 缩放」，留空则继承全局。召唤时按屏分配，哪块没满放哪块；
+  所有允许屏都满了就不再增加。
+  **Per-monitor max count and scale** under Settings → Monitors; blank inherits
+  the global value.  Spawning is distributed screen by screen.
+- **跨屏移动策略。** 允许的屏之间自由跨；宠物跑进被禁止的屏会在下一帧拉回
+  最近的允许屏，不打断当前动作。跨到新屏时自动切换成那块屏的缩放。
+  **Cross-screen movement.**  Pets cross freely between allowed screens, are
+  pulled off a forbidden screen without interrupting their action, and adopt
+  the destination screen's scale.
+- **养成数值随会话保存。** 心情 / 体力 / 健康 / 好感度和已经说过的里程碑
+  （50/80/100）重启后都还在 —— 以前四个养成值重启就归零，同一句里程碑会再说。
+  **Mood, stamina, health, rapport and announced milestones now persist** across
+  restarts; previously the four stats were reset to zero on every launch.
+- **自定义表达式能在加载时发现运行时错误。** 对纯常量表达式做一次试算，
+  `#{1/0}`、`#{Math.floor()}`（缺参）这类编译能过但运行必炸的错误会在
+  设置页当场标出；依赖宠物/环境变量的表达式不会试算，避免误报。
+  **Load-time trial evaluation catches runtime errors in constant expressions**
+  like `#{1/0}` or `#{Math.floor()}`.
+
+### 🐛 修复 Fixed
+
+- **禁屏上的宠物拉不回来（潜伏 bug）。** 旧的拉回逻辑引用了一个不存在的
+  窗口属性，还把移动接口的返回值当成了另一种对象；异常被每帧的容错吞掉，
+  单屏环境发现不了，真实多屏上禁屏形同虚设。
+  **Forbidden screens did not pull pets back.**  The old path referenced a
+  non-existent window attribute and misread the move API's tuple result; the
+  error was swallowed per tick, invisible on a single-monitor machine.
+
+---
+
 ## [1.2.1] — 2026-11-04
 
 **多屏用户终于能限制宠物活动范围了。**

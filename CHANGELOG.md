@@ -375,6 +375,16 @@
 
 ## [1.0.10] — 2026-10-15
 
+> ⚠️ **v1.0.10 对外从未发布。** 这个版本只在内部测试过，从未推送到 GitHub
+> 仓库，也从未生成过安装包。这里保留它的完整记录，是因为它修的 bug
+> （凭空行走、反复转向）在后续版本里**真的复现过** —— 没有这段记录，
+> 我们不会知道根因是 `interrupt=True` 每帧重入。
+> **v1.0.10 was never released externally.**  It was an internal test build
+> only; no tag, no installer, no GitHub release.  The full entry is kept
+> because the bugs it fixed (walking-in-place, flip-flopping) *did* recur
+> in later builds — without this record we would not have traced them back
+> to the per-tick `interrupt=True` re-entry.
+
 **你打字的时候，宠物会让开。**
 **Pets move out of your way while you type.**
 
